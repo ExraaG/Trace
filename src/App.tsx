@@ -165,18 +165,16 @@ function App() {
     void getCurrentWindow().onCloseRequested(async (event) => {
       if (closeApprovedRef.current || !dirtyRef.current) return;
       event.preventDefault();
-      const shouldClose = await confirm(
-        "Your sketch has unsaved changes. Close Trace and discard them?",
-        {
-          title: "Unsaved changes",
-          kind: "warning",
-          okLabel: "Discard and close",
-          cancelLabel: "Keep editing",
-        },
-      );
+      const prompt = "Your sketch has unsaved changes. Close Trace and discard them?";
+      const shouldClose = await confirm(prompt, {
+        title: "Unsaved changes",
+        kind: "warning",
+        okLabel: "Discard and close",
+        cancelLabel: "Keep editing",
+      }).catch(() => window.confirm(prompt));
       if (shouldClose) {
         closeApprovedRef.current = true;
-        await getCurrentWindow().close();
+        await invoke("quit_app");
       }
     }).then((unlisten) => {
       if (disposed) unlisten();

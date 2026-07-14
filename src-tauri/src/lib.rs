@@ -955,6 +955,11 @@ fn write_serial(state: State<'_, SerialState>, data: String) -> Result<(), Strin
         .map_err(|error| format!("Could not write to {}: {error}", active.port_name))
 }
 
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
 async fn provider_error(response: reqwest::Response, provider: &str) -> String {
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
@@ -1562,6 +1567,7 @@ pub fn run() {
             open_serial,
             close_serial,
             write_serial,
+            quit_app,
             sync_libraries,
             list_ai_models,
             ask_ai
