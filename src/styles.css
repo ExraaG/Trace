@@ -256,6 +256,24 @@
     @apply bg-emerald-500 text-emerald-950 hover:bg-emerald-400 disabled:bg-zinc-700 disabled:text-zinc-400 disabled:opacity-70;
   }
 
+  .package-install-bar {
+    @apply relative z-30 shrink-0 border-b border-orange-950/70 bg-[#111114];
+  }
+
+  .package-install-summary {
+    @apply flex h-8 w-full items-center gap-2 px-3 text-left text-[11px] transition-colors hover:bg-zinc-900/70;
+  }
+
+  .package-install-list {
+    @apply max-h-64 overflow-y-auto border-t border-line bg-[#0d0d10] px-3 py-1.5 shadow-xl shadow-black/30;
+    scrollbar-color: #3f3f46 transparent;
+    scrollbar-width: thin;
+  }
+
+  .package-install-item {
+    @apply border-b border-zinc-900 py-2 last:border-b-0;
+  }
+
   .select-wrap {
     @apply flex h-8 items-center gap-2 rounded-md border border-line bg-zinc-900/70 px-2 text-xs transition focus-within:border-zinc-600;
   }

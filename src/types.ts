@@ -17,6 +17,16 @@ export interface OperationResult {
   exitCode: number | null;
 }
 
+export type LibraryInstallStatus = "resolving" | "downloading" | "installing" | "installed" | "failed";
+
+export interface LibraryInstallEvent {
+  header: string;
+  package: string;
+  status: LibraryInstallStatus;
+  progress: number;
+  message: string;
+}
+
 export interface SerialLine {
   line: string;
 }

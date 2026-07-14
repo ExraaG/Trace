@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use serialport::SerialPort;
 use std::{
+    collections::{HashMap, HashSet},
     env, fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -147,6 +148,22 @@ struct SerialSession {
 struct SerialState {
     session: Mutex<Option<SerialSession>>,
     blocked_for_upload: AtomicBool,
+}
+
+#[derive(Default)]
+struct LibraryState {
+    statuses: Mutex<HashMap<String, String>>,
+    install_lock: Arc<AsyncMutex<()>>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LibraryInstallEvent<'a> {
+    header: &'a str,
+    package: &'a str,
+    status: &'a str,
+    progress: u8,
+    message: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -372,13 +389,373 @@ async fn run_tool(
     })
 }
 
+fn emit_library_status(
+    app: &AppHandle,
+    header: &str,
+    package: &str,
+    status: &str,
+    progress: u8,
+    message: &str,
+) {
+    if let Ok(mut statuses) = app.state::<LibraryState>().statuses.lock() {
+        statuses.insert(header.to_owned(), status.to_owned());
+    }
+    let _ = app.emit(
+        "library-install",
+        LibraryInstallEvent {
+            header,
+            package,
+            status,
+            progress,
+            message,
+        },
+    );
+}
+
+fn is_core_or_system_header(header: &str) -> bool {
+    let lower = header.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "arduino.h"
+            | "wire.h"
+            | "spi.h"
+            | "wifi.h"
+            | "wificlient.h"
+            | "wifiserver.h"
+            | "wifiudp.h"
+            | "bluetoothserial.h"
+            | "esp.h"
+            | "esp32-hal.h"
+            | "stdint.h"
+            | "stddef.h"
+            | "stdbool.h"
+            | "stdio.h"
+            | "stdlib.h"
+            | "string.h"
+            | "math.h"
+            | "time.h"
+    ) || ["freertos/", "driver/", "soc/", "hal/", "lwip/", "esp_"]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+}
+
+fn installed_library_index(value: &Value) -> (HashSet<String>, HashSet<String>) {
+    let mut headers = HashSet::new();
+    let mut packages = HashSet::new();
+    for entry in value
+        .get("installed_libraries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(library) = entry.get("library") else {
+            continue;
+        };
+        if let Some(name) = library.get("name").and_then(Value::as_str) {
+            packages.insert(name.to_ascii_lowercase());
+        }
+        for header in library
+            .get("provides_includes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            headers.insert(header.to_ascii_lowercase());
+        }
+    }
+    (headers, packages)
+}
+
+fn search_library_names(value: &Value) -> Vec<String> {
+    value
+        .get("libraries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|library| library.get("name").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect()
+}
+
+async fn run_arduino_cli_json(args: &[String]) -> Result<Value, String> {
+    let command = arduino_cli_path();
+    let mut process = Command::new(&command);
+    process.args(args).kill_on_drop(true);
+    let output = process
+        .output()
+        .await
+        .map_err(|error| friendly_command_error(&command, error))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if detail.is_empty() {
+            format!("arduino-cli exited with {}", output.status)
+        } else {
+            detail
+        });
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("Could not read arduino-cli library data: {error}"))
+}
+
+async fn resolve_library_package(header: &str) -> Result<Option<String>, String> {
+    let compact = "--omit-releases-details".to_owned();
+    let json_flag = "--json".to_owned();
+    let by_header = run_arduino_cli_json(&[
+        "lib".to_owned(),
+        "search".to_owned(),
+        format!("provides={header}"),
+        compact.clone(),
+        json_flag.clone(),
+    ])
+    .await?;
+    let header_matches = search_library_names(&by_header);
+    if header_matches.len() == 1 {
+        return Ok(header_matches.into_iter().next());
+    }
+    if header_matches.len() > 1 {
+        return Err(format!(
+            "Multiple Arduino libraries provide {header}; install the intended package manually."
+        ));
+    }
+
+    let stem = Path::new(header)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(header);
+    let by_name = run_arduino_cli_json(&[
+        "lib".to_owned(),
+        "search".to_owned(),
+        format!("name={stem}"),
+        compact,
+        json_flag,
+    ])
+    .await?;
+    let name_matches = search_library_names(&by_name);
+    if name_matches.len() == 1 {
+        Ok(name_matches.into_iter().next())
+    } else if name_matches.is_empty() {
+        Ok(None)
+    } else {
+        Err(format!(
+            "Multiple Arduino libraries match {header}; install the intended package manually."
+        ))
+    }
+}
+
+async fn install_library_package(
+    app: &AppHandle,
+    header: &str,
+    package: &str,
+) -> Result<(), String> {
+    emit_library_status(
+        app,
+        header,
+        package,
+        "downloading",
+        35,
+        "Downloading package and dependencies…",
+    );
+    let command = arduino_cli_path();
+    let mut process = Command::new(&command);
+    process
+        .args(["lib", "install", package, "--no-color"])
+        .kill_on_drop(true);
+    let output = process.output();
+    tokio::pin!(output);
+    let mut progress = 35_u8;
+    let result = loop {
+        tokio::select! {
+            output = &mut output => break output.map_err(|error| friendly_command_error(&command, error))?,
+            _ = tokio::time::sleep(Duration::from_millis(450)) => {
+                progress = (progress + 6).min(88);
+                let (status, message) = if progress < 58 {
+                    ("downloading", "Downloading package and dependencies…")
+                } else {
+                    ("installing", "Installing package and dependencies…")
+                };
+                emit_library_status(app, header, package, status, progress, message);
+            }
+        }
+    };
+
+    if result.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&result.stderr).trim().to_owned();
+        let stdout = String::from_utf8_lossy(&result.stdout).trim().to_owned();
+        let detail = if stderr.is_empty() { stdout } else { stderr };
+        Err(if detail.is_empty() {
+            format!("arduino-cli exited with {}", result.status)
+        } else {
+            detail.lines().last().unwrap_or(&detail).to_owned()
+        })
+    }
+}
+
+async fn process_library_queue(app: AppHandle, fqbn: String, headers: Vec<String>) {
+    let install_lock = app.state::<LibraryState>().install_lock.clone();
+    let _guard = install_lock.lock().await;
+    let list_result = run_arduino_cli_json(&[
+        "lib".to_owned(),
+        "list".to_owned(),
+        "--all".to_owned(),
+        "--fqbn".to_owned(),
+        fqbn,
+        "--json".to_owned(),
+    ])
+    .await;
+    let (mut installed_headers, mut installed_packages) = match list_result {
+        Ok(value) => installed_library_index(&value),
+        Err(error) => {
+            for header in headers {
+                emit_library_status(&app, &header, "", "failed", 100, &error);
+            }
+            return;
+        }
+    };
+
+    let mut missing_headers = Vec::new();
+    for header in headers {
+        let lower_header = header.to_ascii_lowercase();
+        if is_core_or_system_header(&header) || installed_headers.contains(&lower_header) {
+            if let Ok(mut statuses) = app.state::<LibraryState>().statuses.lock() {
+                statuses.insert(header, "available".to_owned());
+            }
+            continue;
+        }
+        emit_library_status(
+            &app,
+            &header,
+            "",
+            "resolving",
+            8,
+            "Queued for library resolution…",
+        );
+        missing_headers.push(header);
+    }
+
+    for header in missing_headers {
+        let lower_header = header.to_ascii_lowercase();
+        emit_library_status(
+            &app,
+            &header,
+            "",
+            "resolving",
+            15,
+            "Finding the Arduino library…",
+        );
+        let package = match resolve_library_package(&header).await {
+            Ok(Some(package)) => package,
+            Ok(None) => {
+                emit_library_status(
+                    &app,
+                    &header,
+                    "",
+                    "failed",
+                    100,
+                    "No matching package was found in Arduino Library Manager.",
+                );
+                continue;
+            }
+            Err(error) => {
+                emit_library_status(&app, &header, "", "failed", 100, &error);
+                continue;
+            }
+        };
+
+        if installed_packages.contains(&package.to_ascii_lowercase()) {
+            emit_library_status(
+                &app,
+                &header,
+                &package,
+                "installed",
+                100,
+                "Library is already installed.",
+            );
+            installed_headers.insert(lower_header);
+            continue;
+        }
+
+        match install_library_package(&app, &header, &package).await {
+            Ok(()) => {
+                installed_packages.insert(package.to_ascii_lowercase());
+                installed_headers.insert(lower_header);
+                emit_library_status(
+                    &app,
+                    &header,
+                    &package,
+                    "installed",
+                    100,
+                    "Package installed successfully.",
+                );
+            }
+            Err(error) => {
+                emit_library_status(&app, &header, &package, "failed", 100, &error);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn sync_libraries(
+    app: AppHandle,
+    state: State<'_, LibraryState>,
+    headers: Vec<String>,
+    fqbn: String,
+    retry: bool,
+) -> Result<(), String> {
+    let mut statuses = state
+        .statuses
+        .lock()
+        .map_err(|_| "Library state lock was poisoned.".to_owned())?;
+    let mut pending = Vec::new();
+    let mut seen = HashSet::new();
+    for header in headers {
+        let header = header.trim().replace('\\', "/");
+        if header.is_empty()
+            || header.len() > 160
+            || header.contains("..")
+            || !seen.insert(header.to_ascii_lowercase())
+        {
+            continue;
+        }
+        let may_retry = retry && statuses.get(&header).is_some_and(|value| value == "failed");
+        if !statuses.contains_key(&header) || may_retry {
+            statuses.insert(header.clone(), "checking".to_owned());
+            pending.push(header);
+        }
+    }
+    drop(statuses);
+
+    if !pending.is_empty() {
+        tauri::async_runtime::spawn(process_library_queue(app, fqbn, pending));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn compile_sketch(
     app: AppHandle,
     state: State<'_, ToolState>,
+    library_state: State<'_, LibraryState>,
     sketch_code: String,
     fqbn: String,
 ) -> Result<OperationResult, String> {
+    let library_installing = library_state
+        .statuses
+        .lock()
+        .map_err(|_| "Library state lock was poisoned.".to_owned())?
+        .values()
+        .any(|status| {
+            matches!(
+                status.as_str(),
+                "checking" | "resolving" | "downloading" | "installing"
+            )
+        });
+    if library_installing {
+        return Err("Arduino libraries are still being downloaded. Wait for package installation to finish, then compile again.".to_owned());
+    }
     let staged_sketch = stage_sketch_source(&sketch_code)?;
     run_tool(
         app,
@@ -1175,6 +1552,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(ToolState::default())
         .manage(SerialState::default())
+        .manage(LibraryState::default())
         .invoke_handler(tauri::generate_handler![
             list_boards,
             read_sketch,
@@ -1184,6 +1562,7 @@ pub fn run() {
             open_serial,
             close_serial,
             write_serial,
+            sync_libraries,
             list_ai_models,
             ask_ai
         ])
@@ -1201,6 +1580,32 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexes_headers_provided_by_installed_libraries() {
+        let value = json!({
+            "installed_libraries": [{
+                "library": {
+                    "name": "WiFi",
+                    "provides_includes": ["WiFi.h", "WiFiClient.h"]
+                }
+            }]
+        });
+        let (headers, packages) = installed_library_index(&value);
+        assert!(headers.contains("wifi.h"));
+        assert!(headers.contains("wificlient.h"));
+        assert!(packages.contains("wifi"));
+    }
+
+    #[test]
+    fn reads_exact_library_search_results() {
+        let value = json!({
+            "libraries": [{ "name": "Stepper" }],
+            "status": "success"
+        });
+        assert_eq!(search_library_names(&value), vec!["Stepper"]);
+        assert!(search_library_names(&json!({ "status": "success" })).is_empty());
+    }
 
     #[test]
     fn stages_unsaved_editor_source_as_a_valid_arduino_sketch() {

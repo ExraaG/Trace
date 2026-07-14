@@ -31,6 +31,7 @@ import {
 import { AiAssistant } from "./components/AiAssistant";
 import { AiSettingsModal } from "./components/AiSettingsModal";
 import { BuildOutput } from "./components/BuildOutput";
+import { PackageInstallBar } from "./components/PackageInstallBar";
 import { SerialConsole } from "./components/SerialConsole";
 import { StartupSplash } from "./components/StartupSplash";
 import { DEFAULT_SETTINGS, PRESET_LAYOUTS, readSettings, writeSettings } from "./lib/settings";
@@ -38,6 +39,7 @@ import type {
   AiProvider,
   AppSettings,
   Board,
+  LibraryInstallEvent,
   LayoutPreset,
   LogEntry,
   Operation,
@@ -80,6 +82,16 @@ function basename(path: string | null): string {
   return path.split(/[\\/]/).pop() || "Untitled.ino";
 }
 
+function extractLibraryHeaders(source: string): string[] {
+  const headers = new Set<string>();
+  const pattern = /^\s*#\s*include\s*<\s*([^>]+?)\s*>/gm;
+  for (const match of source.matchAll(pattern)) {
+    const header = match[1]?.trim();
+    if (header && /\.(?:h|hpp)$/i.test(header)) headers.add(header);
+  }
+  return [...headers];
+}
+
 function clonePreset(preset: Exclude<LayoutPreset, "custom">, aiEnabled: boolean) {
   const value = structuredClone(PRESET_LAYOUTS[preset]);
   if (!aiEnabled) {
@@ -99,6 +111,7 @@ function App() {
   const [operation, setOperation] = useState<Operation | null>(null);
   const [compileSucceeded, setCompileSucceeded] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [libraryInstalls, setLibraryInstalls] = useState<Record<string, LibraryInstallEvent>>({});
   const [serialOpen, setSerialOpen] = useState(false);
   const [serialEntries, setSerialEntries] = useState<SerialEntry[]>([]);
   const [baudRate, setBaudRate] = useState(115200);
@@ -116,6 +129,7 @@ function App() {
   const compileSucceededRef = useRef(compileSucceeded);
   const dirtyRef = useRef(dirty);
   const closeApprovedRef = useRef(false);
+  const libraryDismissTimers = useRef(new Map<string, number>());
   const outerGroup = useGroupRef();
   const verticalGroup = useGroupRef();
   const bottomGroup = useGroupRef();
@@ -124,6 +138,18 @@ function App() {
     () => boards.find((board) => board.port === selectedPort) ?? null,
     [boards, selectedPort],
   );
+  const includedHeaders = useMemo(() => extractLibraryHeaders(code), [code]);
+  const libraryInstallList = useMemo(() => Object.values(libraryInstalls), [libraryInstalls]);
+  const activeLibraryInstalls = useMemo(
+    () => libraryInstallList.filter((install) => ["resolving", "downloading", "installing"].includes(install.status)),
+    [libraryInstallList],
+  );
+  const failedCurrentLibraries = useMemo(() => {
+    const currentHeaders = new Set(includedHeaders.map((header) => header.toLowerCase()));
+    return libraryInstallList.filter(
+      (install) => install.status === "failed" && currentHeaders.has(install.header.toLowerCase()),
+    );
+  }, [includedHeaders, libraryInstallList]);
 
   useEffect(() => {
     dirtyRef.current = dirty;
@@ -208,10 +234,29 @@ function App() {
           appendLog("Serial device disconnected.", "system", "stderr");
         }
       }),
+      listen<LibraryInstallEvent>("library-install", ({ payload }) => {
+        const existingTimer = libraryDismissTimers.current.get(payload.header);
+        if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+        setLibraryInstalls((current) => ({ ...current, [payload.header]: payload }));
+        if (payload.status === "installed") {
+          const timer = window.setTimeout(() => {
+            setLibraryInstalls((current) => {
+              if (current[payload.header]?.status !== "installed") return current;
+              const next = { ...current };
+              delete next[payload.header];
+              return next;
+            });
+            libraryDismissTimers.current.delete(payload.header);
+          }, 5000);
+          libraryDismissTimers.current.set(payload.header, timer);
+        }
+      }),
     ];
 
     return () => {
       void Promise.all(unlisteners).then((stops) => stops.forEach((stop) => stop()));
+      libraryDismissTimers.current.forEach((timer) => window.clearTimeout(timer));
+      libraryDismissTimers.current.clear();
     };
   }, [appendLog, appendSerial]);
 
@@ -234,6 +279,18 @@ function App() {
   useEffect(() => {
     void refreshBoards();
   }, [refreshBoards]);
+
+  useEffect(() => {
+    if (!selectedBoard || includedHeaders.length === 0) return;
+    const timer = window.setTimeout(() => {
+      void invoke("sync_libraries", {
+        headers: includedHeaders,
+        fqbn: selectedBoard.fqbn,
+        retry: false,
+      }).catch((error) => appendLog(`Library check failed: ${errorMessage(error)}`, "system", "stderr"));
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [appendLog, includedHeaders, selectedBoard]);
 
   useEffect(() => {
     const layout = settings.layout;
@@ -340,6 +397,17 @@ function App() {
   const runCompile = async (): Promise<AiToolResult> => {
     if (operation !== null) {
       return { success: false, message: "Compile could not start because another operation is running." };
+    }
+    if (activeLibraryInstalls.length > 0) {
+      const message = `${activeLibraryInstalls.length} ${activeLibraryInstalls.length === 1 ? "library is" : "libraries are"} still installing. Wait for package installation to finish, then compile again.`;
+      appendLog(message, "system", "stderr");
+      return { success: false, message };
+    }
+    if (failedCurrentLibraries.length > 0) {
+      const names = failedCurrentLibraries.map((install) => install.package || install.header).join(", ");
+      const message = `Cannot compile because library installation failed: ${names}. Open the package bar and retry.`;
+      appendLog(message, "system", "stderr");
+      return { success: false, message };
     }
     if (!selectedBoard) {
       appendLog("Select a connected board before compiling.", "system", "stderr");
@@ -473,6 +541,40 @@ function App() {
     );
     if (!approved) return { success: false, message: "Upload cancelled—nothing was written to the board." };
     return runUpload();
+  };
+
+  const retryLibraryInstall = (header: string) => {
+    if (!selectedBoard) {
+      appendLog("Select a connected board before retrying library installation.", "system", "stderr");
+      return;
+    }
+    const current = libraryInstalls[header];
+    setLibraryInstalls((installs) => ({
+      ...installs,
+      [header]: {
+        header,
+        package: current?.package ?? "",
+        status: "resolving",
+        progress: 8,
+        message: "Retry queued…",
+      },
+    }));
+    void invoke("sync_libraries", {
+      headers: [header],
+      fqbn: selectedBoard.fqbn,
+      retry: true,
+    }).catch((error) => {
+      setLibraryInstalls((installs) => ({
+        ...installs,
+        [header]: {
+          header,
+          package: current?.package ?? "",
+          status: "failed",
+          progress: 100,
+          message: errorMessage(error),
+        },
+      }));
+    });
   };
 
   const sendSerial = async () => {
@@ -626,6 +728,8 @@ function App() {
           </button>
         </div>
       </header>
+
+      <PackageInstallBar installs={libraryInstallList} onRetry={retryLibraryInstall} />
 
       <Group
         id="trace-outer"

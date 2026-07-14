@@ -2,7 +2,7 @@
 
 Trace is a focused, dark-mode-first desktop IDE for ESP32 Arduino development. It keeps the editor experience modern and small while delegating board discovery, dependency resolution, compilation, and upload to the proven `arduino-cli` toolchain.
 
-The v1 workflow is intentionally narrow: edit one `.ino` sketch, choose a connected ESP32, compile, upload, and inspect or send serial data from the built-in console. Build and upload output streams into the UI as it arrives. Trace does not include multi-file projects, a file tree, library management, board/core management, or themes.
+The v1 workflow is intentionally narrow: edit one `.ino` sketch, choose a connected ESP32, compile, upload, and inspect or send serial data from the built-in console. Build and upload output streams into the UI as it arrives. Trace automatically installs missing libraries referenced by `#include` directives, but does not include multi-file projects, a file tree, a manual library browser, board/core management, or themes.
 
 ## Install Trace
 
@@ -93,12 +93,16 @@ GitHub Actions creates the release and uploads all platform installers. Once tha
 ## Using Trace
 
 1. Connect an ESP32 over USB and select its name and port in the toolbar. Use refresh if it was connected after Trace opened.
-2. Open an existing `.ino` file or edit the starter sketch and choose **Save As**.
-3. Select **Compile**. Trace saves the current buffer and streams `arduino-cli` output into the build panel.
+2. Open an existing `.ino` file or edit the starter sketch. Saving is optional for compilation.
+3. Select **Compile**. Trace compiles the current editor buffer and streams `arduino-cli` output into the build panel.
 4. After a successful compile, select **Upload**. Upload remains disabled until that session has a successful, current compile.
 5. Connect the serial console, select a baud rate (115200 by default), and send or receive newline-delimited data.
 
 Arduino sketches conventionally live in a directory with the same name as the primary `.ino` file (for example, `Blink/Blink.ino`). Following that convention provides the best compatibility with Arduino CLI.
+
+## Automatic libraries
+
+When the editor contains an angle-bracket include such as `#include <Stepper.h>`, Trace checks the selected ESP32 core and installed Arduino libraries first. If the header is missing, Trace resolves the matching package through Arduino Library Manager and installs it asynchronously with `arduino-cli`. A compact package bar appears below the toolbar; select it to see per-package resolution, download, installation, completion, or failure progress. Failed installs remain visible and can be retried. Compile waits for active installs and reports unresolved library failures clearly instead of starting a broken build.
 
 ## Layout & Panels
 
