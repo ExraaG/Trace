@@ -1,4 +1,5 @@
 import { LoaderCircle, TerminalSquare, WandSparkles } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type { LogEntry, Operation } from "../types";
 
 interface BuildOutputProps {
@@ -9,6 +10,15 @@ interface BuildOutputProps {
 }
 
 export function BuildOutput({ logs, operation, onClear, onExplain }: BuildOutputProps) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [followOutput, setFollowOutput] = useState(true);
+
+  useEffect(() => {
+    if (!followOutput) return;
+    const element = scrollRef.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [followOutput, logs]);
+
   return (
     <section className="panel-shell" aria-label="Build output">
       <div className="panel-header">
@@ -21,10 +31,25 @@ export function BuildOutput({ logs, operation, onClear, onExplain }: BuildOutput
               <WandSparkles size={11} /> Explain error
             </button>
           )}
-          <button className="panel-action" onClick={onClear}>Clear</button>
+          <button
+            className="panel-action"
+            onClick={() => {
+              setFollowOutput(true);
+              onClear();
+            }}
+          >
+            Clear
+          </button>
         </div>
       </div>
-      <div className="log-scroll">
+      <div
+        ref={scrollRef}
+        className="log-scroll"
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          setFollowOutput(element.scrollHeight - element.scrollTop - element.clientHeight < 24);
+        }}
+      >
         {logs.length === 0 && <span className="text-zinc-600">Build and upload output will appear here.</span>}
         {logs.map((entry) => (
           <div

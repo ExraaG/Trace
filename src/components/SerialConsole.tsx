@@ -57,7 +57,15 @@ export function SerialConsole(props: SerialConsoleProps) {
         >
           <Clock3 size={11} /> Time
         </button>
-        <button className="panel-action" onClick={props.onClear}>Clear</button>
+        <button
+          className="panel-action"
+          onClick={() => {
+            setFollowOutput(true);
+            props.onClear();
+          }}
+        >
+          Clear
+        </button>
         <button
           className={`console-connect ${props.open ? "is-open" : ""}`}
           onClick={props.onToggle}
