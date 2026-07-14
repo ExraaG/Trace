@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use serialport::SerialPort;
 use std::{
-    fs,
+    env, fs,
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -17,6 +17,44 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tokio::{io::AsyncBufReadExt, process::Command, sync::Mutex as AsyncMutex};
 
 const DEFAULT_ESP32_FQBN: &str = "esp32:esp32:esp32";
+const AI_SYSTEM_PROMPT: &str = "You are the optional Trace IDE assistant. Help with ESP32, Arduino, C++, build errors, uploads, and embedded debugging. Be concise, practical, and explicit when uncertain. Prefer the smallest safe fix. You only know code or logs the user deliberately includes in chat.";
+
+fn arduino_cli_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "arduino-cli.exe"
+    } else {
+        "arduino-cli"
+    }
+}
+
+fn arduino_cli_path() -> PathBuf {
+    if let Some(path) = env::var_os("TRACE_ARDUINO_CLI").filter(|value| !value.is_empty()) {
+        return PathBuf::from(path);
+    }
+
+    let home = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"));
+    if let Some(home) = home {
+        let managed = PathBuf::from(home)
+            .join(".trace")
+            .join("bin")
+            .join(arduino_cli_binary_name());
+        if managed.is_file() {
+            return managed;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    for path in [
+        "/opt/homebrew/bin/arduino-cli",
+        "/usr/local/bin/arduino-cli",
+    ] {
+        if Path::new(path).is_file() {
+            return PathBuf::from(path);
+        }
+    }
+
+    PathBuf::from(arduino_cli_binary_name())
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +88,42 @@ struct SerialStateEvent<'a> {
     open: bool,
     port: Option<&'a str>,
     reason: &'a str,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct AiMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct OpenAiResponse {
+    #[serde(default)]
+    output: Vec<OpenAiOutput>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiOutput {
+    #[serde(default)]
+    content: Vec<OpenAiContent>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiContent {
+    #[serde(default)]
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct AnthropicResponse {
+    #[serde(default)]
+    content: Vec<AnthropicContent>,
+}
+
+#[derive(Deserialize)]
+struct AnthropicContent {
+    #[serde(default)]
+    text: String,
 }
 
 #[derive(Default)]
@@ -91,11 +165,14 @@ struct DetectedBoard {
     fqbn: String,
 }
 
-fn friendly_command_error(command: &str, error: std::io::Error) -> String {
+fn friendly_command_error(command: &Path, error: std::io::Error) -> String {
     if error.kind() == std::io::ErrorKind::NotFound {
-        format!("{command} was not found on PATH. Install arduino-cli and restart Trace.")
+        format!(
+            "Arduino CLI was not found at {}. Re-run the Trace installer or set TRACE_ARDUINO_CLI.",
+            command.display()
+        )
     } else {
-        format!("Could not start {command}: {error}")
+        format!("Could not start {}: {error}", command.display())
     }
 }
 
@@ -134,11 +211,12 @@ fn parse_board_list(bytes: &[u8]) -> Result<Vec<Board>, String> {
 
 #[tauri::command]
 async fn list_boards() -> Result<Vec<Board>, String> {
-    let output = Command::new("arduino-cli")
+    let command = arduino_cli_path();
+    let output = Command::new(&command)
         .args(["board", "list", "--json"])
         .output()
         .await
-        .map_err(|error| friendly_command_error("arduino-cli", error))?;
+        .map_err(|error| friendly_command_error(&command, error))?;
     if !output.status.success() {
         let details = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         return Err(if details.is_empty() {
@@ -206,13 +284,14 @@ async fn run_tool(
         .operation_lock
         .try_lock()
         .map_err(|_| "Another compile or upload is already running.".to_owned())?;
-    let mut child = Command::new("arduino-cli")
+    let command = arduino_cli_path();
+    let mut child = Command::new(&command)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|error| friendly_command_error("arduino-cli", error))?;
+        .map_err(|error| friendly_command_error(&command, error))?;
     let stdout = child
         .stdout
         .take()
@@ -445,9 +524,144 @@ fn write_serial(state: State<'_, SerialState>, data: String) -> Result<(), Strin
         .map_err(|error| format!("Could not write to {}: {error}", active.port_name))
 }
 
+async fn provider_error(response: reqwest::Response, provider: &str) -> String {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let message = serde_json::from_str::<Value>(&body)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| body.chars().take(800).collect());
+    if message.is_empty() {
+        format!("{provider} returned HTTP {status}.")
+    } else {
+        format!("{provider} returned HTTP {status}: {message}")
+    }
+}
+
+async fn ask_openai(
+    client: &reqwest::Client,
+    api_key: &str,
+    messages: &[AiMessage],
+) -> Result<String, String> {
+    let response = client
+        .post("https://api.openai.com/v1/responses")
+        .bearer_auth(api_key)
+        .json(&json!({
+            "model": "gpt-5.6-luna",
+            "instructions": AI_SYSTEM_PROMPT,
+            "input": messages,
+            "max_output_tokens": 2048,
+            "reasoning": { "effort": "low" },
+            "store": false
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach OpenAI: {error}"))?;
+    if !response.status().is_success() {
+        return Err(provider_error(response, "OpenAI").await);
+    }
+    let value = response
+        .json::<OpenAiResponse>()
+        .await
+        .map_err(|error| format!("OpenAI returned an unreadable response: {error}"))?;
+    let text = value
+        .output
+        .into_iter()
+        .flat_map(|item| item.content)
+        .map(|content| content.text)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.trim().is_empty())
+        .then_some(text)
+        .ok_or_else(|| "OpenAI returned no text response.".to_owned())
+}
+
+async fn ask_anthropic(
+    client: &reqwest::Client,
+    api_key: &str,
+    messages: &[AiMessage],
+) -> Result<String, String> {
+    let response = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&json!({
+            "model": "claude-sonnet-5",
+            "system": AI_SYSTEM_PROMPT,
+            "messages": messages,
+            "max_tokens": 2048
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach Anthropic: {error}"))?;
+    if !response.status().is_success() {
+        return Err(provider_error(response, "Anthropic").await);
+    }
+    let value = response
+        .json::<AnthropicResponse>()
+        .await
+        .map_err(|error| format!("Anthropic returned an unreadable response: {error}"))?;
+    let text = value
+        .content
+        .into_iter()
+        .map(|content| content.text)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.trim().is_empty())
+        .then_some(text)
+        .ok_or_else(|| "Anthropic returned no text response.".to_owned())
+}
+
+#[tauri::command]
+async fn ask_ai(
+    provider: String,
+    api_key: String,
+    messages: Vec<AiMessage>,
+) -> Result<String, String> {
+    if api_key.trim().is_empty() {
+        return Err("Add an API key in Trace settings first.".to_owned());
+    }
+    if messages.is_empty() {
+        return Err("Enter a question for the assistant.".to_owned());
+    }
+    if messages.iter().any(|message| {
+        !matches!(message.role.as_str(), "user" | "assistant") || message.content.trim().is_empty()
+    }) {
+        return Err("The assistant request contains an invalid message.".to_owned());
+    }
+    let total_bytes = messages
+        .iter()
+        .map(|message| message.content.len())
+        .sum::<usize>();
+    if total_bytes > 100_000 {
+        return Err(
+            "The assistant conversation is too large. Start a shorter conversation.".to_owned(),
+        );
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(90))
+        .build()
+        .map_err(|error| format!("Could not initialize the AI client: {error}"))?;
+    match provider.as_str() {
+        "openai" => ask_openai(&client, api_key.trim(), &messages).await,
+        "anthropic" => ask_anthropic(&client, api_key.trim(), &messages).await,
+        _ => Err("Unsupported AI provider.".to_owned()),
+    }
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
         .manage(ToolState::default())
         .manage(SerialState::default())
         .invoke_handler(tauri::generate_handler![
@@ -458,7 +672,8 @@ pub fn run() {
             upload_sketch,
             open_serial,
             close_serial,
-            write_serial
+            write_serial,
+            ask_ai
         ])
         .build(tauri::generate_context!())
         .expect("error while building Trace");

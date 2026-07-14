@@ -1,0 +1,80 @@
+name: Release Trace
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            args: --target x86_64-unknown-linux-gnu --bundles appimage,deb
+          - name: macOS Apple Silicon
+            platform: macos-latest
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg
+          - name: macOS Intel
+            platform: macos-latest
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles dmg
+          - name: Windows x64
+            platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: --target x86_64-pc-windows-msvc --bundles nsis,msi
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and upload release bundles
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Trace v__VERSION__
+          releaseBody: |
+            Trace desktop installers for Linux, macOS, and Windows.
+
+            Linux and macOS:
+            `curl -fsSL https://raw.githubusercontent.com/ExraaG/Trace/main/install.sh | sh`
+
+            Windows PowerShell:
+            `irm https://raw.githubusercontent.com/ExraaG/Trace/main/install.ps1 | iex`
+          releaseDraft: false
+          prerelease: false
+          generateReleaseNotes: true
+          args: ${{ matrix.args }}
+          releaseAssetNamePattern: Trace-[platform]-[arch][setup][ext]

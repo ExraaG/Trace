@@ -21,6 +21,13 @@ export interface SerialLine {
   line: string;
 }
 
+export interface SerialEntry {
+  id: number;
+  line: string;
+  elapsedMs: number;
+  kind: "data" | "status";
+}
+
 export interface SerialStateEvent {
   open: boolean;
   port: string | null;
@@ -32,4 +39,31 @@ export interface LogEntry {
   source: "compile" | "upload" | "system";
   stream: "stdout" | "stderr" | "system";
   text: string;
+}
+
+export type AiProvider = "anthropic" | "openai";
+
+export interface AiMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export type LayoutPreset = "focus" | "debug" | "full" | "custom";
+
+export interface PanelLayout {
+  preset: LayoutPreset;
+  outer: Record<string, number>;
+  vertical: Record<string, number>;
+  bottom: Record<string, number>;
+  consoleVisible: boolean;
+  aiVisible: boolean;
+}
+
+export interface AppSettings {
+  onboardingComplete: boolean;
+  aiEnabled: boolean;
+  aiProvider: AiProvider;
+  apiKeys: Partial<Record<AiProvider, string>>;
+  serialTimestamps: boolean;
+  layout: PanelLayout;
 }

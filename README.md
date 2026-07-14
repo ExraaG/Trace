@@ -2,11 +2,29 @@
 
 Trace is a focused, dark-mode-first desktop IDE for ESP32 Arduino development. It keeps the editor experience modern and small while delegating board discovery, dependency resolution, compilation, and upload to the proven `arduino-cli` toolchain.
 
-The v1 workflow is intentionally narrow: edit one `.ino` sketch, choose a connected ESP32, compile, upload, and inspect or send serial data from the built-in monitor. Build and upload output streams into the UI as it arrives. Trace does not include multi-file projects, a file tree, library management, board/core installation, themes, or settings.
+The v1 workflow is intentionally narrow: edit one `.ino` sketch, choose a connected ESP32, compile, upload, and inspect or send serial data from the built-in console. Build and upload output streams into the UI as it arrives. Trace does not include multi-file projects, a file tree, library management, board/core management, or themes.
+
+## Install Trace
+
+After the repository is public and the first release is published, the installer handles Trace, Arduino CLI, and the ESP32 Arduino core in one command.
+
+**Linux (x86_64) and macOS (Intel or Apple Silicon):**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ExraaG/Trace/main/install.sh | sh
+```
+
+**Windows x64 (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/ExraaG/Trace/main/install.ps1 | iex
+```
+
+The Linux installer places a self-contained AppImage and desktop entry in the current user's home directory. The macOS installer copies Trace to `~/Applications`, and the Windows installer uses the native Trace setup package. No administrator access is required for Trace or Arduino CLI itself. A board-specific USB driver may still be required on Windows or macOS; Linux users may need serial-device permission through their distribution's `dialout` or `uucp` group.
 
 ## Prerequisites
 
-Install all of the following before running Trace:
+The one-command installer supplies the application toolchain. The following are only required when building Trace from source:
 
 - [Rust via `rustup`](https://www.rust-lang.org/tools/install), including `cargo` and the stable Rust toolchain.
 - [Tauri 2 system prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system:
@@ -15,8 +33,8 @@ Install all of the following before running Trace:
   - **Linux:** WebKitGTK and the distribution-specific development packages listed in Tauri's guide. On Debian/Ubuntu this includes the WebKitGTK, GTK, appindicator, SVG, SSL, and build-essential packages from that guide.
 - The [Tauri CLI](https://v2.tauri.app/reference/cli/). This project declares the JavaScript CLI locally, so `npm install` installs it; a separate global installation is not required.
 - A current [Node.js LTS release](https://nodejs.org/en/download) with npm. npm is the package manager used by the checked-in lockfile.
-- [`arduino-cli`](https://arduino.github.io/arduino-cli/latest/installation/) installed on `PATH`.
-- The [Espressif Arduino core for ESP32](https://docs.espressif.com/projects/arduino-esp32/en/latest/installing.html), installed as the `esp32:esp32` core.
+- [`arduino-cli`](https://arduino.github.io/arduino-cli/latest/installation/) installed on `PATH`, or in Trace's managed `~/.trace/bin` location.
+- The [Espressif Arduino core for ESP32](https://docs.espressif.com/projects/arduino-esp32/en/latest/installing.html), installed as the `esp32:esp32` core. The one-command installers configure this automatically.
 - The USB/serial driver required by your specific ESP32 board. On Linux, your user must also have serial-port access (commonly membership in the `dialout` or `uucp` group); log out and back in after changing group membership.
 
 If Arduino CLI is installed but the ESP32 core is not, install the stable core with:
@@ -55,7 +73,20 @@ Build the optimized frontend, Rust binary, and native installer/bundle for the c
 npm run tauri build
 ```
 
-Artifacts are written under `src-tauri/target/release/bundle/` (`.deb` and `.rpm` on Linux). Production installers for another operating system should be built on that operating system; platform signing may be required for distribution. AppImage distribution is best built in an older supported Linux container or CI image so its glibc baseline remains portable.
+Artifacts are written under `src-tauri/target/release/bundle/` (`.deb` and `.rpm` for a local Linux build). Production installers for another operating system should be built on that operating system; platform signing may be required for distribution.
+
+## Publishing a release
+
+The release workflow builds an x86_64 Linux AppImage and DEB, Intel and Apple Silicon macOS DMGs, and Windows x64 NSIS/MSI installers. It only runs for version tags, so normal pushes never publish a release.
+
+When the repository is public and version numbers in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` match, publish with:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+GitHub Actions creates the release and uploads all platform installers. Once that workflow finishes, the one-command installers above use the newest published release automatically.
 
 ## Using Trace
 
@@ -63,15 +94,27 @@ Artifacts are written under `src-tauri/target/release/bundle/` (`.deb` and `.rpm
 2. Open an existing `.ino` file or edit the starter sketch and choose **Save As**.
 3. Select **Compile**. Trace saves the current buffer and streams `arduino-cli` output into the build panel.
 4. After a successful compile, select **Upload**. Upload remains disabled until that session has a successful, current compile.
-5. Open the serial monitor, select a baud rate (115200 by default), and send or receive newline-delimited data. Trace closes the port before uploading and offers to reopen it afterward.
+5. Connect the serial console, select a baud rate (115200 by default), and send or receive newline-delimited data.
 
 Arduino sketches conventionally live in a directory with the same name as the primary `.ino` file (for example, `Blink/Blink.ino`). Following that convention provides the best compatibility with Arduino CLI.
+
+## Layout & Panels
+
+Drag any divider to resize the editor, build output, serial console, or enabled AI assistant. Trace remembers custom sizes and collapsed panels across restarts. The toolbar also provides three starting points: **Focus** gives most of the window to code, **Debug** keeps build and serial output prominent, and **Full** balances every enabled panel. Dragging a divider after choosing a preset changes the saved layout to **Custom**.
+
+## AI Assistant (optional)
+
+The first-launch prompt can enable a basic ESP32/Arduino assistant using your own Anthropic or OpenAI API key. It is opt-in: when disabled, the panel is hidden and Trace makes no provider requests. Keys are stored locally in Trace's app-data settings file, are never added to logs, and requests go directly from the Rust backend to the selected provider. Open **Settings** to enable, disable, or change the provider later. **Explain error** copies the current build output into the chat input for review before sending.
+
+## Serial Console
+
+The docked console supports common baud rates, defaults to 115200, sends text on Enter, optionally shows relative timestamps, and follows new output until you scroll up. Because an ESP32 serial port cannot be monitored and uploaded to simultaneously, Trace disconnects it automatically for upload, records that status in the console, and offers a one-click **Reconnect** when uploading finishes.
 
 ## Project layout
 
 ```text
 src/                    React, TypeScript, Monaco, and Tailwind UI
-src-tauri/src/lib.rs    Tauri commands, streamed tool output, and serial I/O
+src-tauri/src/lib.rs    Tauri commands, streamed tool output, serial I/O, and AI provider requests
 src-tauri/              Rust package, capabilities, icons, and Tauri config
 ```
 

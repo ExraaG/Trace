@@ -3,27 +3,44 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
-  AlertCircle,
+  Bot,
   Check,
   ChevronDown,
   CircleDot,
   Code2,
+  Columns3,
   FolderOpen,
   LoaderCircle,
   Play,
   RefreshCw,
   Save,
-  Send,
+  Settings,
   TerminalSquare,
   Upload,
-  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Group,
+  Panel,
+  Separator,
+  useGroupRef,
+  type Layout,
+  type LayoutChangedMeta,
+} from "react-resizable-panels";
+import { AiAssistant } from "./components/AiAssistant";
+import { AiSettingsModal } from "./components/AiSettingsModal";
+import { BuildOutput } from "./components/BuildOutput";
+import { SerialConsole } from "./components/SerialConsole";
+import { DEFAULT_SETTINGS, PRESET_LAYOUTS, readSettings, writeSettings } from "./lib/settings";
 import type {
+  AiProvider,
+  AppSettings,
   Board,
+  LayoutPreset,
   LogEntry,
   Operation,
   OperationResult,
+  SerialEntry,
   SerialLine,
   SerialStateEvent,
   ToolOutput,
@@ -42,8 +59,6 @@ void loop() {
 }
 `;
 
-const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -51,6 +66,15 @@ function errorMessage(error: unknown): string {
 function basename(path: string | null): string {
   if (!path) return "Untitled.ino";
   return path.split(/[\\/]/).pop() || "Untitled.ino";
+}
+
+function clonePreset(preset: Exclude<LayoutPreset, "custom">, aiEnabled: boolean) {
+  const value = structuredClone(PRESET_LAYOUTS[preset]);
+  if (!aiEnabled) {
+    value.outer = { workspace: 100 };
+    value.aiVisible = false;
+  }
+  return value;
 }
 
 function App() {
@@ -64,14 +88,21 @@ function App() {
   const [compileSucceeded, setCompileSucceeded] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [serialOpen, setSerialOpen] = useState(false);
-  const [serialPanel, setSerialPanel] = useState(false);
-  const [serialLines, setSerialLines] = useState<string[]>([]);
+  const [serialEntries, setSerialEntries] = useState<SerialEntry[]>([]);
   const [baudRate, setBaudRate] = useState(115200);
   const [serialInput, setSerialInput] = useState("");
   const [reopenAfterUpload, setReopenAfterUpload] = useState(false);
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settingsReady, setSettingsReady] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [explainPrompt, setExplainPrompt] = useState<string | null>(null);
   const logId = useRef(0);
-  const logEnd = useRef<HTMLDivElement>(null);
-  const serialEnd = useRef<HTMLDivElement>(null);
+  const serialId = useRef(0);
+  const serialStartedAt = useRef(Date.now());
+  const outerGroup = useGroupRef();
+  const verticalGroup = useGroupRef();
+  const bottomGroup = useGroupRef();
+
   const selectedBoard = useMemo(
     () => boards.find((board) => board.port === selectedPort) ?? null,
     [boards, selectedPort],
@@ -84,17 +115,42 @@ function App() {
     [],
   );
 
+  const appendSerial = useCallback((line: string, kind: SerialEntry["kind"] = "status") => {
+    setSerialEntries((entries) => [
+      ...entries.slice(-1999),
+      { id: serialId.current++, line, kind, elapsedMs: Date.now() - serialStartedAt.current },
+    ]);
+  }, []);
+
+  const updateSettings = useCallback((update: (current: AppSettings) => AppSettings) => {
+    setSettings((current) => {
+      const next = update(current);
+      void writeSettings(next).catch((error) => {
+        appendLog(`Could not save settings: ${errorMessage(error)}`, "system", "stderr");
+      });
+      return next;
+    });
+  }, [appendLog]);
+
+  useEffect(() => {
+    void readSettings()
+      .then(setSettings)
+      .catch((error) => appendLog(`Could not load settings: ${errorMessage(error)}`, "system", "stderr"))
+      .finally(() => setSettingsReady(true));
+  }, [appendLog]);
+
   useEffect(() => {
     const unlisteners = [
       listen<ToolOutput>("tool-output", ({ payload }) => {
         appendLog(payload.line, payload.operation, payload.stream);
       }),
       listen<SerialLine>("serial-line", ({ payload }) => {
-        setSerialLines((lines) => [...lines.slice(-1999), payload.line]);
+        appendSerial(payload.line, "data");
       }),
       listen<SerialStateEvent>("serial-state", ({ payload }) => {
         setSerialOpen(payload.open);
         if (!payload.open && payload.reason === "disconnected") {
+          appendSerial("Serial device disconnected.");
           appendLog("Serial device disconnected.", "system", "stderr");
         }
       }),
@@ -103,15 +159,7 @@ function App() {
     return () => {
       void Promise.all(unlisteners).then((stops) => stops.forEach((stop) => stop()));
     };
-  }, [appendLog]);
-
-  useEffect(() => {
-    logEnd.current?.scrollIntoView({ block: "end" });
-  }, [logs]);
-
-  useEffect(() => {
-    serialEnd.current?.scrollIntoView({ block: "end" });
-  }, [serialLines]);
+  }, [appendLog, appendSerial]);
 
   const refreshBoards = useCallback(async () => {
     setBoardsLoading(true);
@@ -122,9 +170,6 @@ function App() {
         if (detected.some((board) => board.port === current)) return current;
         return detected[0]?.port ?? "";
       });
-      if (detected.length === 0) {
-        appendLog("No connected boards found. Connect an ESP32 and refresh.");
-      }
     } catch (error) {
       appendLog(`Board detection failed: ${errorMessage(error)}`, "system", "stderr");
     } finally {
@@ -136,19 +181,71 @@ function App() {
     void refreshBoards();
   }, [refreshBoards]);
 
-  const saveTo = useCallback(
-    async (path: string) => {
-      let inoPath = path;
-      if (!inoPath.toLowerCase().endsWith(".ino")) inoPath += ".ino";
-      await invoke("write_sketch", { path: inoPath, contents: code });
-      if (filePath !== inoPath) setCompileSucceeded(false);
-      setFilePath(inoPath);
-      setDirty(false);
-      appendLog(`Saved ${inoPath}`);
-      return inoPath;
-    },
-    [appendLog, code, filePath],
-  );
+  useEffect(() => {
+    const layout = settings.layout;
+    verticalGroup.current?.setLayout(layout.vertical);
+    bottomGroup.current?.setLayout(layout.bottom);
+    outerGroup.current?.setLayout(settings.aiEnabled ? layout.outer : { workspace: 100 });
+  }, [bottomGroup, outerGroup, settings.aiEnabled, settings.layout, verticalGroup]);
+
+  const recordLayout = useCallback((group: "outer" | "vertical" | "bottom", layout: Layout, meta: LayoutChangedMeta) => {
+    if (!meta.isUserInteraction) return;
+    updateSettings((current) => ({
+      ...current,
+      layout: {
+        ...current.layout,
+        [group]: layout,
+        preset: "custom",
+        ...(group === "bottom" ? { consoleVisible: (layout.console ?? 0) > 0.5 } : {}),
+        ...(group === "outer" ? { aiVisible: (layout.ai ?? 0) > 0.5 } : {}),
+      },
+    }));
+  }, [updateSettings]);
+
+  const applyPreset = (preset: Exclude<LayoutPreset, "custom">) => {
+    updateSettings((current) => ({ ...current, layout: clonePreset(preset, current.aiEnabled) }));
+  };
+
+  const toggleConsolePanel = () => {
+    updateSettings((current) => {
+      const show = !current.layout.consoleVisible;
+      return {
+        ...current,
+        layout: {
+          ...current.layout,
+          preset: "custom",
+          consoleVisible: show,
+          bottom: show ? { build: 45, console: 55 } : { build: 100, console: 0 },
+        },
+      };
+    });
+  };
+
+  const toggleAiPanel = () => {
+    updateSettings((current) => {
+      const show = !current.layout.aiVisible;
+      return {
+        ...current,
+        layout: {
+          ...current.layout,
+          preset: "custom",
+          aiVisible: show,
+          outer: show ? { workspace: 72, ai: 28 } : { workspace: 100, ai: 0 },
+        },
+      };
+    });
+  };
+
+  const saveTo = useCallback(async (path: string) => {
+    let inoPath = path;
+    if (!inoPath.toLowerCase().endsWith(".ino")) inoPath += ".ino";
+    await invoke("write_sketch", { path: inoPath, contents: code });
+    if (filePath !== inoPath) setCompileSucceeded(false);
+    setFilePath(inoPath);
+    setDirty(false);
+    appendLog(`Saved ${inoPath}`);
+    return inoPath;
+  }, [appendLog, code, filePath]);
 
   const saveAsSketch = useCallback(async () => {
     const path = await save({
@@ -225,31 +322,32 @@ function App() {
 
   const openSerial = useCallback(async () => {
     if (!selectedPort) {
-      appendLog("Select a port before opening the serial monitor.", "system", "stderr");
+      appendSerial("Select a port before connecting.");
       return false;
     }
     try {
+      serialStartedAt.current = Date.now();
       await invoke("open_serial", { port: selectedPort, baudRate });
       setSerialOpen(true);
-      setSerialPanel(true);
-      appendLog(`Serial monitor opened on ${selectedPort} at ${baudRate} baud.`);
+      setReopenAfterUpload(false);
+      appendSerial(`Connected to ${selectedPort} at ${baudRate} baud.`);
       return true;
     } catch (error) {
-      appendLog(`Serial monitor: ${errorMessage(error)}`, "system", "stderr");
+      appendSerial(`Connection failed: ${errorMessage(error)}`);
       setSerialOpen(false);
       return false;
     }
-  }, [appendLog, baudRate, selectedPort]);
+  }, [appendSerial, baudRate, selectedPort]);
 
-  const closeSerial = useCallback(async () => {
+  const closeSerial = useCallback(async (reason = "user") => {
     try {
-      await invoke("close_serial", { reason: "user" });
+      await invoke("close_serial", { reason });
     } catch (error) {
-      appendLog(`Could not close serial port: ${errorMessage(error)}`, "system", "stderr");
+      appendSerial(`Could not close serial port: ${errorMessage(error)}`);
     } finally {
       setSerialOpen(false);
     }
-  }, [appendLog]);
+  }, [appendSerial]);
 
   const runUpload = async () => {
     if (!selectedBoard || !filePath || !compileSucceeded) return;
@@ -259,8 +357,8 @@ function App() {
     setOperation("upload");
     setReopenAfterUpload(false);
     if (wasOpen) {
-      appendLog("Closing the serial monitor before upload…", "upload");
-      await closeSerial();
+      appendSerial("Disconnected for upload…");
+      await closeSerial("upload");
     }
     appendLog(`Uploading ${basename(path)} to ${selectedBoard.port}…`, "upload");
     try {
@@ -274,18 +372,12 @@ function App() {
         "upload",
         result.success ? "system" : "stderr",
       );
-      setReopenAfterUpload(wasOpen);
     } catch (error) {
       appendLog(`Upload failed: ${errorMessage(error)}`, "upload", "stderr");
-      setReopenAfterUpload(wasOpen);
     } finally {
+      setReopenAfterUpload(wasOpen);
       setOperation(null);
     }
-  };
-
-  const toggleSerial = async () => {
-    if (serialOpen) await closeSerial();
-    else await openSerial();
   };
 
   const sendSerial = async () => {
@@ -294,8 +386,39 @@ function App() {
       await invoke("write_serial", { data: `${serialInput}\n` });
       setSerialInput("");
     } catch (error) {
-      appendLog(`Serial write failed: ${errorMessage(error)}`, "system", "stderr");
+      appendSerial(`Write failed: ${errorMessage(error)}`);
     }
+  };
+
+  const enableAi = (provider: AiProvider, apiKey: string) => {
+    updateSettings((current) => ({
+      ...current,
+      onboardingComplete: true,
+      aiEnabled: true,
+      aiProvider: provider,
+      apiKeys: { ...current.apiKeys, [provider]: apiKey },
+      layout: {
+        ...current.layout,
+        preset: "custom",
+        aiVisible: true,
+        outer: { workspace: 72, ai: 28 },
+      },
+    }));
+  };
+
+  const disableAi = () => {
+    updateSettings((current) => ({
+      ...current,
+      onboardingComplete: true,
+      aiEnabled: false,
+      layout: { ...current.layout, preset: "custom", aiVisible: false, outer: { workspace: 100 } },
+    }));
+  };
+
+  const explainBuildOutput = () => {
+    const output = logs.map((entry) => entry.text).join("\n").slice(-20_000);
+    setExplainPrompt(`Explain this ESP32/Arduino build output and suggest the smallest likely fix:\n\n${output}`);
+    if (!settings.layout.aiVisible) toggleAiPanel();
   };
 
   const configureMonaco = (monaco: Monaco) => {
@@ -320,26 +443,21 @@ function App() {
     });
   };
 
+  const apiKey = settings.apiKeys[settings.aiProvider] ?? "";
+
   return (
-    <main className="flex h-screen min-h-[600px] flex-col overflow-hidden bg-canvas text-zinc-200">
+    <main className="flex h-screen min-h-[520px] flex-col overflow-hidden bg-canvas text-zinc-200">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line bg-panel px-3">
         <div className="mr-2 flex items-center gap-2" title="Trace">
-          <span className="grid h-7 w-7 place-items-center rounded-md bg-orange-500/15 text-orange-400">
-            <Code2 size={16} strokeWidth={2.2} />
-          </span>
+          <span className="grid h-7 w-7 place-items-center rounded-md bg-orange-500/15 text-orange-400"><Code2 size={16} strokeWidth={2.2} /></span>
           <span className="text-sm font-semibold tracking-wide text-zinc-100">Trace</span>
         </div>
 
-        <button className="toolbar-button" onClick={openSketch} disabled={operation !== null}>
-          <FolderOpen size={14} /> Open
-        </button>
-        <button className="toolbar-button" onClick={() => void saveAsSketch()} disabled={operation !== null}>
-          <Save size={14} /> Save As
-        </button>
-
+        <button className="toolbar-button" onClick={openSketch} disabled={operation !== null}><FolderOpen size={14} /> Open</button>
+        <button className="toolbar-button" onClick={() => void saveAsSketch()} disabled={operation !== null}><Save size={14} /> Save As</button>
         <div className="mx-1 h-5 w-px bg-line" />
 
-        <div className="select-wrap min-w-52 max-w-72 flex-1">
+        <div className="select-wrap min-w-48 max-w-72 flex-1">
           <CircleDot size={13} className={selectedBoard ? "text-emerald-400" : "text-zinc-600"} />
           <select
             value={selectedPort}
@@ -352,45 +470,36 @@ function App() {
             aria-label="Target board and port"
           >
             {boards.length === 0 && <option value="">No boards connected</option>}
-            {boards.map((board) => (
-              <option key={board.port} value={board.port}>
-                {board.name} · {board.port}
-              </option>
-            ))}
+            {boards.map((board) => <option key={board.port} value={board.port}>{board.name} · {board.port}</option>)}
           </select>
           <ChevronDown size={13} className="pointer-events-none text-zinc-500" />
         </div>
-        <button
-          className="icon-button"
-          onClick={() => void refreshBoards()}
-          disabled={boardsLoading || operation !== null}
-          title="Refresh boards"
-          aria-label="Refresh boards"
-        >
+        <button className="icon-button" onClick={() => void refreshBoards()} disabled={boardsLoading || operation !== null} title="Refresh boards" aria-label="Refresh boards">
           <RefreshCw size={14} className={boardsLoading ? "animate-spin" : ""} />
         </button>
 
+        <div className="layout-switcher" title="Layout preset">
+          <Columns3 size={13} className="text-zinc-500" />
+          <select value={settings.layout.preset} onChange={(event) => event.target.value !== "custom" && applyPreset(event.target.value as Exclude<LayoutPreset, "custom">)}>
+            <option value="focus">Focus</option>
+            <option value="debug">Debug</option>
+            <option value="full">Full</option>
+            {settings.layout.preset === "custom" && <option value="custom">Custom</option>}
+          </select>
+        </div>
+        <button className={`icon-button ${settings.layout.consoleVisible ? "is-active" : ""}`} onClick={toggleConsolePanel} title="Toggle console" aria-label="Toggle console"><TerminalSquare size={14} /></button>
+        {settings.aiEnabled && (
+          <button className={`icon-button ${settings.layout.aiVisible ? "is-active" : ""}`} onClick={toggleAiPanel} title="Toggle AI assistant" aria-label="Toggle AI assistant"><Bot size={14} /></button>
+        )}
+        <button className="icon-button" onClick={() => setSettingsOpen(true)} title="Settings" aria-label="Settings"><Settings size={14} /></button>
+
         <div className="ml-auto flex items-center gap-2">
-          <button
-            className={`toolbar-button ${serialOpen ? "border-emerald-700/70 text-emerald-300" : ""}`}
-            onClick={() => {
-              setSerialPanel(true);
-              void toggleSerial();
-            }}
-            disabled={!selectedPort || operation !== null}
-          >
-            <TerminalSquare size={14} /> {serialOpen ? "Close serial" : "Open serial"}
-          </button>
-          <button
-            className="action-button bg-zinc-100 text-zinc-950 hover:bg-white"
-            onClick={() => void runCompile()}
-            disabled={!selectedBoard || operation !== null}
-          >
+          <button className="action-button border border-zinc-600 bg-zinc-100 text-zinc-950 hover:bg-white" onClick={() => void runCompile()} disabled={operation !== null}>
             {operation === "compile" ? <LoaderCircle size={14} className="animate-spin" /> : <Play size={14} />}
             Compile
           </button>
           <button
-            className="action-button bg-orange-500 text-zinc-950 hover:bg-orange-400"
+            className="action-button upload-button"
             onClick={() => void runUpload()}
             disabled={!compileSucceeded || !selectedBoard || operation !== null}
             title={!compileSucceeded ? "Compile successfully before uploading" : "Upload to board"}
@@ -401,138 +510,126 @@ function App() {
         </div>
       </header>
 
-      <section className="flex min-h-0 flex-1 flex-col">
-        <div className="flex h-8 shrink-0 items-center border-b border-line bg-[#0d0d10] px-4 text-xs">
-          <span className="mr-2 h-2 w-2 rounded-full bg-orange-500" />
-          <span className="text-zinc-300">{basename(filePath)}</span>
-          {dirty && <span className="ml-1 text-zinc-500">•</span>}
-          <span className="ml-auto truncate text-[11px] text-zinc-600">{filePath ?? "Save the sketch before compiling"}</span>
-        </div>
-        <div className="min-h-0 flex-1">
-          <Editor
-            height="100%"
-            language="cpp"
-            theme="trace-dark"
-            value={code}
-            beforeMount={configureMonaco}
-            onChange={(value) => {
-              setCode(value ?? "");
-              setDirty(true);
-              setCompileSucceeded(false);
-            }}
-            options={{
-              automaticLayout: true,
-              minimap: { enabled: false },
-              fontSize: 13,
-              lineHeight: 21,
-              fontFamily: "JetBrains Mono, SFMono-Regular, Consolas, monospace",
-              fontLigatures: true,
-              padding: { top: 12, bottom: 12 },
-              scrollBeyondLastLine: false,
-              smoothScrolling: true,
-              renderLineHighlight: "all",
-              bracketPairColorization: { enabled: true },
-              guides: { bracketPairs: true, indentation: false },
-              tabSize: 2,
-            }}
-          />
-        </div>
-      </section>
+      <Group
+        id="trace-outer"
+        groupRef={outerGroup}
+        orientation="horizontal"
+        className="min-h-0 flex-1"
+        defaultLayout={settings.aiEnabled ? settings.layout.outer : { workspace: 100 }}
+        onLayoutChanged={(layout, meta) => recordLayout("outer", layout, meta)}
+      >
+        <Panel id="workspace" minSize="500px">
+          <Group
+            id="trace-vertical"
+            groupRef={verticalGroup}
+            orientation="vertical"
+            defaultLayout={settings.layout.vertical}
+            onLayoutChanged={(layout, meta) => recordLayout("vertical", layout, meta)}
+          >
+            <Panel id="editor" minSize="200px">
+              <section className="flex h-full min-h-0 flex-col">
+                <div className="flex h-8 shrink-0 items-center border-b border-line bg-[#0d0d10] px-4 text-xs">
+                  <span className="mr-2 h-2 w-2 rounded-full bg-orange-500" />
+                  <span className="text-zinc-300">{basename(filePath)}</span>
+                  {dirty && <span className="ml-1 text-zinc-500">•</span>}
+                  <span className="ml-auto truncate text-[11px] text-zinc-600">{filePath ?? "Save the sketch before compiling"}</span>
+                </div>
+                <div className="min-h-0 flex-1">
+                  <Editor
+                    height="100%"
+                    language="cpp"
+                    theme="trace-dark"
+                    value={code}
+                    beforeMount={configureMonaco}
+                    onChange={(value) => {
+                      setCode(value ?? "");
+                      setDirty(true);
+                      setCompileSucceeded(false);
+                    }}
+                    options={{
+                      automaticLayout: true,
+                      minimap: { enabled: false },
+                      fontSize: 13,
+                      lineHeight: 21,
+                      fontFamily: "JetBrains Mono, SFMono-Regular, Consolas, monospace",
+                      fontLigatures: true,
+                      padding: { top: 12, bottom: 12 },
+                      scrollBeyondLastLine: false,
+                      smoothScrolling: true,
+                      renderLineHighlight: "all",
+                      bracketPairColorization: { enabled: true },
+                      guides: { bracketPairs: true, indentation: false },
+                      tabSize: 2,
+                    }}
+                  />
+                </div>
+              </section>
+            </Panel>
+            <Separator className="resize-handle horizontal" />
+            <Panel id="lower" minSize="120px">
+              <Group
+                id="trace-bottom"
+                groupRef={bottomGroup}
+                orientation="horizontal"
+                defaultLayout={settings.layout.bottom}
+                onLayoutChanged={(layout, meta) => recordLayout("bottom", layout, meta)}
+              >
+                <Panel id="build" minSize="120px">
+                  <BuildOutput logs={logs} operation={operation} onClear={() => setLogs([])} onExplain={settings.aiEnabled ? explainBuildOutput : undefined} />
+                </Panel>
+                <Separator className="resize-handle vertical" />
+                <Panel id="console" minSize="150px" collapsible collapsedSize={0}>
+                  <SerialConsole
+                    entries={serialEntries}
+                    open={serialOpen}
+                    hasPort={Boolean(selectedPort)}
+                    baudRate={baudRate}
+                    timestamps={settings.serialTimestamps}
+                    input={serialInput}
+                    operation={operation}
+                    reconnectAvailable={reopenAfterUpload}
+                    onBaudRate={setBaudRate}
+                    onTimestamps={(value) => updateSettings((current) => ({ ...current, serialTimestamps: value }))}
+                    onInput={setSerialInput}
+                    onToggle={() => serialOpen ? void closeSerial() : void openSerial()}
+                    onSend={() => void sendSerial()}
+                    onClear={() => setSerialEntries([])}
+                    onReconnect={() => void openSerial()}
+                  />
+                </Panel>
+              </Group>
+            </Panel>
+          </Group>
+        </Panel>
 
-      <section className={`grid shrink-0 border-t border-line bg-panel ${serialPanel ? "grid-cols-2" : "grid-cols-1"}`}>
-        <div className="flex h-56 min-w-0 flex-col border-r border-line last:border-r-0">
-          <div className="panel-header">
-            <TerminalSquare size={13} />
-            <span>Build output</span>
-            {operation && <LoaderCircle size={12} className="ml-1 animate-spin text-orange-400" />}
-            <button className="panel-action ml-auto" onClick={() => setLogs([])}>Clear</button>
-          </div>
-          <div className="log-scroll">
-            {logs.length === 0 && <span className="text-zinc-600">Build and upload output will appear here.</span>}
-            {logs.map((entry) => (
-              <div key={entry.id} className={entry.stream === "stderr" ? "text-red-300" : entry.stream === "system" ? "text-zinc-400" : "text-zinc-300"}>
-                <span className="mr-2 select-none text-zinc-700">›</span>{entry.text}
-              </div>
-            ))}
-            <div ref={logEnd} />
-          </div>
-          {reopenAfterUpload && !serialOpen && (
-            <div className="flex h-9 shrink-0 items-center gap-2 border-t border-line bg-orange-500/5 px-3 text-xs text-orange-200">
-              <AlertCircle size={13} /> Serial monitor was closed for upload.
-              <button
-                className="ml-auto rounded border border-orange-700/60 px-2 py-1 hover:bg-orange-500/10"
-                onClick={() => {
-                  setReopenAfterUpload(false);
-                  void openSerial();
-                }}
-              >
-                Reopen
-              </button>
-            </div>
-          )}
-        </div>
-
-        {serialPanel && (
-          <div className="flex h-56 min-w-0 flex-col">
-            <div className="panel-header">
-              <span className={`h-2 w-2 rounded-full ${serialOpen ? "bg-emerald-400" : "bg-zinc-600"}`} />
-              <span>Serial monitor</span>
-              <select
-                className="ml-auto rounded border border-line bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-300 outline-none"
-                value={baudRate}
-                onChange={(event) => setBaudRate(Number(event.target.value))}
-                disabled={serialOpen}
-                aria-label="Serial baud rate"
-              >
-                {BAUD_RATES.map((rate) => <option key={rate} value={rate}>{rate} baud</option>)}
-              </select>
-              <button
-                className="icon-button h-6 w-6"
-                onClick={() => {
-                  if (serialOpen) void closeSerial();
-                  setSerialPanel(false);
-                }}
-                title="Close panel"
-                aria-label="Close serial panel"
-              >
-                <X size={13} />
-              </button>
-            </div>
-            <div className="log-scroll flex-1">
-              {serialLines.length === 0 && <span className="text-zinc-600">{serialOpen ? "Waiting for serial data…" : "Open the serial port to monitor output."}</span>}
-              {serialLines.map((line, index) => <div key={index} className="text-emerald-200/90">{line || " "}</div>)}
-              <div ref={serialEnd} />
-            </div>
-            <form
-              className="flex h-10 shrink-0 items-center gap-2 border-t border-line px-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void sendSerial();
-              }}
-            >
-              <input
-                className="min-w-0 flex-1 bg-transparent px-1 font-mono text-xs text-zinc-200 outline-none placeholder:text-zinc-600"
-                value={serialInput}
-                onChange={(event) => setSerialInput(event.target.value)}
-                placeholder={serialOpen ? "Send to board…" : "Serial port is closed"}
-                disabled={!serialOpen}
-              />
-              <button className="icon-button" type="submit" disabled={!serialOpen || !serialInput} title="Send" aria-label="Send serial data">
-                <Send size={13} />
-              </button>
-              <button className="panel-action" type="button" onClick={() => setSerialLines([])}>Clear</button>
-            </form>
-          </div>
+        {settings.aiEnabled && (
+          <>
+            <Separator className="resize-handle vertical" />
+            <Panel id="ai" minSize="280px" collapsible collapsedSize={0}>
+              <AiAssistant provider={settings.aiProvider} apiKey={apiKey} explainPrompt={explainPrompt} onExplainConsumed={() => setExplainPrompt(null)} />
+            </Panel>
+          </>
         )}
-      </section>
+      </Group>
 
       <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-line bg-[#0d0d10] px-3 text-[10px] text-zinc-600">
         <span className="flex items-center gap-1.5">
           {compileSucceeded ? <Check size={11} className="text-emerald-500" /> : <CircleDot size={11} />}
           {compileSucceeded ? "Compiled" : "Not compiled"}
         </span>
+        <span>{settings.layout.preset === "custom" ? "Custom layout" : `${settings.layout.preset[0].toUpperCase()}${settings.layout.preset.slice(1)} layout`}</span>
         <span className="ml-auto">ESP32 · Arduino</span>
       </footer>
+
+      {settingsReady && (!settings.onboardingComplete || settingsOpen) && (
+        <AiSettingsModal
+          firstLaunch={!settings.onboardingComplete}
+          settings={settings}
+          onEnable={enableAi}
+          onDisable={disableAi}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
     </main>
   );
 }

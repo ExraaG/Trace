@@ -38,8 +38,16 @@
     @apply grid h-8 w-8 shrink-0 place-items-center rounded-md border border-line bg-zinc-900/70 text-zinc-400 transition hover:border-zinc-600 hover:bg-zinc-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40;
   }
 
+  .icon-button.is-active {
+    @apply border-orange-800/70 bg-orange-500/10 text-orange-300;
+  }
+
   .action-button {
-    @apply flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-35;
+    @apply flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-xs font-semibold transition disabled:cursor-not-allowed;
+  }
+
+  .upload-button {
+    @apply bg-emerald-500 text-emerald-950 hover:bg-emerald-400 disabled:bg-zinc-700 disabled:text-zinc-400 disabled:opacity-70;
   }
 
   .select-wrap {
@@ -54,6 +62,10 @@
     @apply flex h-8 shrink-0 items-center gap-2 border-b border-line px-3 text-[11px] font-medium uppercase tracking-wider text-zinc-500;
   }
 
+  .panel-shell {
+    @apply flex h-full min-h-0 min-w-0 flex-col bg-panel;
+  }
+
   .panel-action {
     @apply rounded px-1.5 py-0.5 text-[10px] normal-case tracking-normal text-zinc-500 transition hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40;
   }
@@ -62,5 +74,142 @@
     @apply min-h-0 flex-1 overflow-auto px-3 py-2 font-mono text-[11px] leading-[18px];
     scrollbar-color: #3f3f46 transparent;
     scrollbar-width: thin;
+  }
+
+  .compact-select {
+    @apply rounded border border-line bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-300 outline-none disabled:opacity-50;
+  }
+
+  .layout-switcher {
+    @apply flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line bg-zinc-900/70 px-2 text-xs;
+  }
+
+  .layout-switcher select {
+    @apply appearance-none bg-transparent pr-1 text-zinc-300 outline-none;
+  }
+
+  .resize-handle {
+    @apply relative z-10 shrink-0 bg-line transition-colors duration-150 hover:bg-orange-500/70 focus:bg-orange-500 focus:outline-none;
+  }
+
+  .resize-handle.horizontal {
+    @apply h-px cursor-row-resize;
+  }
+
+  .resize-handle.horizontal::after {
+    content: "";
+    @apply absolute -top-1.5 left-0 h-3 w-full;
+  }
+
+  .resize-handle.vertical {
+    @apply h-full w-px cursor-col-resize;
+  }
+
+  .resize-handle.vertical::after {
+    content: "";
+    @apply absolute -left-1.5 top-0 h-full w-3;
+  }
+
+  .console-connect {
+    @apply flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-[10px] text-zinc-300 transition hover:border-emerald-700 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .console-connect.is-open {
+    @apply border-emerald-900/80 bg-emerald-500/5 text-emerald-300;
+  }
+
+  .console-input {
+    @apply flex h-10 shrink-0 items-center gap-2 border-t border-line px-2;
+  }
+
+  .console-input input {
+    @apply min-w-0 flex-1 bg-transparent px-1 font-mono text-xs text-zinc-200 outline-none placeholder:text-zinc-600 disabled:cursor-not-allowed;
+  }
+
+  .console-notice {
+    @apply flex h-9 shrink-0 items-center gap-2 border-t border-amber-900/40 bg-amber-500/5 px-3 text-xs text-amber-200;
+  }
+
+  .console-notice button {
+    @apply ml-auto rounded border border-amber-800/70 px-2 py-1 text-[10px] hover:bg-amber-500/10;
+  }
+
+  .ai-scroll {
+    @apply min-h-0 flex-1 space-y-3 overflow-auto px-3 py-3;
+    scrollbar-color: #3f3f46 transparent;
+    scrollbar-width: thin;
+  }
+
+  .ai-empty {
+    @apply mx-auto mt-8 flex max-w-64 flex-col items-center gap-2 text-center text-zinc-500;
+  }
+
+  .ai-empty p {
+    @apply text-sm text-zinc-400;
+  }
+
+  .ai-empty span {
+    @apply text-[11px] leading-5;
+  }
+
+  .ai-message {
+    @apply text-xs leading-5;
+  }
+
+  .ai-message > span {
+    @apply mb-1 block text-[10px] font-semibold uppercase tracking-wider text-zinc-600;
+  }
+
+  .ai-message > p {
+    @apply whitespace-pre-wrap rounded-lg border border-line bg-zinc-900/60 px-3 py-2 text-zinc-300;
+  }
+
+  .ai-message.user > p {
+    @apply border-orange-900/40 bg-orange-500/5;
+  }
+
+  .ai-input {
+    @apply flex shrink-0 items-end gap-2 border-t border-line p-2;
+  }
+
+  .ai-input textarea {
+    @apply min-h-20 min-w-0 flex-1 resize-none rounded-md border border-line bg-zinc-950 px-3 py-2 text-xs leading-5 text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-zinc-600;
+  }
+
+  .modal-backdrop {
+    @apply fixed inset-0 z-50 grid place-items-center bg-black/70 p-6 backdrop-blur-sm;
+  }
+
+  .modal-card {
+    @apply relative w-full max-w-lg rounded-xl border border-zinc-700 bg-[#111114] p-6 shadow-2xl shadow-black/60;
+  }
+
+  .settings-field {
+    @apply grid gap-1.5 text-xs font-medium text-zinc-400;
+  }
+
+  .settings-field select,
+  .settings-field input {
+    @apply h-10 rounded-md border border-line bg-zinc-950 px-3 text-sm text-zinc-200 outline-none focus:border-zinc-600;
+  }
+
+  .settings-toggle {
+    @apply flex cursor-pointer items-center justify-between rounded-lg border border-line bg-zinc-950/60 px-3 py-2.5;
+  }
+
+  .settings-toggle > span {
+    @apply grid gap-0.5;
+  }
+
+  .settings-toggle strong {
+    @apply text-xs font-medium text-zinc-200;
+  }
+
+  .settings-toggle small {
+    @apply text-[10px] text-zinc-600;
+  }
+
+  .settings-toggle input {
+    @apply h-4 w-4 accent-orange-500;
   }
 }
