@@ -37,6 +37,8 @@ The one-command installer supplies the application toolchain. The following are 
 - The [Espressif Arduino core for ESP32](https://docs.espressif.com/projects/arduino-esp32/en/latest/installing.html), installed as the `esp32:esp32` core. The one-command installers configure this automatically.
 - The USB/serial driver required by your specific ESP32 board. On Linux, your user must also have serial-port access (commonly membership in the `dialout` or `uucp` group); log out and back in after changing group membership.
 
+On Linux, Trace automatically applies the NVIDIA explicit-sync compatibility workaround required by affected WebKitGTK/Wayland combinations. No launch-time environment variable is needed.
+
 If Arduino CLI is installed but the ESP32 core is not, install the stable core with:
 
 ```sh

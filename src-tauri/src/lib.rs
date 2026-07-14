@@ -1091,6 +1091,14 @@ async fn ask_ai(
 }
 
 pub fn run() {
+    // WebKitGTK 2.52 can crash on Wayland/NVIDIA explicit-sync before the webview
+    // finishes loading. This opt-out avoids that compositor path without disabling
+    // WebKit's accelerated DMABUF renderer entirely.
+    #[cfg(target_os = "linux")]
+    if env::var_os("__NV_DISABLE_EXPLICIT_SYNC").is_none() {
+        env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
+    }
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
