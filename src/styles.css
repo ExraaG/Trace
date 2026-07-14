@@ -191,6 +191,11 @@
   .settings-field select,
   .settings-field input {
     @apply h-10 rounded-md border border-line bg-zinc-950 px-3 text-sm text-zinc-200 outline-none focus:border-zinc-600;
+    color-scheme: dark;
+  }
+
+  .settings-field select option {
+    @apply bg-zinc-950 text-zinc-200;
   }
 
   .settings-toggle {

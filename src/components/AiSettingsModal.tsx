@@ -13,11 +13,12 @@ interface AiSettingsModalProps {
 
 export function AiSettingsModal({ firstLaunch, settings, onEnable, onDisable, onClose }: AiSettingsModalProps) {
   const [enabled, setEnabled] = useState(firstLaunch || settings.aiEnabled);
-  const [provider, setProvider] = useState<AiProvider>(settings.aiProvider);
+  const [provider, setProvider] = useState<AiProvider | "">(firstLaunch ? "" : settings.aiProvider);
   const [apiKey, setApiKey] = useState(settings.apiKeys[settings.aiProvider] ?? "");
+  const selectedProvider = provider ? PROVIDERS[provider] : null;
 
   useEffect(() => {
-    setApiKey(settings.apiKeys[provider] ?? "");
+    setApiKey(provider ? settings.apiKeys[provider] ?? "" : "");
   }, [provider, settings.apiKeys]);
 
   const decline = () => {
@@ -60,6 +61,7 @@ export function AiSettingsModal({ firstLaunch, settings, onEnable, onDisable, on
               value={provider}
               onChange={(event) => setProvider(event.target.value as AiProvider)}
             >
+              <option value="" disabled>Select a provider…</option>
               {Object.values(PROVIDERS).map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
             </select>
           </label>
@@ -69,28 +71,31 @@ export function AiSettingsModal({ firstLaunch, settings, onEnable, onDisable, on
               type="password"
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
-              placeholder={PROVIDERS[provider].keyPlaceholder}
+              placeholder={selectedProvider?.keyPlaceholder ?? "Select a provider first"}
+              disabled={!selectedProvider}
               autoComplete="off"
               spellCheck={false}
             />
           </label>
-          <a
-            className="inline-flex w-fit items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300"
-            href={PROVIDERS[provider].keyUrl}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Create a {PROVIDERS[provider].label} API key <ExternalLink size={11} />
-          </a>
+          {selectedProvider && (
+            <a
+              className="inline-flex w-fit items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300"
+              href={selectedProvider.keyUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Create a {selectedProvider.label} API key <ExternalLink size={11} />
+            </a>
+          )}
         </div>
 
         <div className="mt-6 flex items-center justify-end gap-2">
           <button className="toolbar-button" onClick={firstLaunch ? decline : onClose}>{firstLaunch ? "Not now" : "Cancel"}</button>
           <button
             className={`action-button ${enabled ? "bg-orange-500 text-zinc-950 hover:bg-orange-400" : "bg-zinc-700 text-zinc-200 hover:bg-zinc-600"}`}
-            disabled={enabled && !apiKey.trim()}
+            disabled={enabled && (!provider || !apiKey.trim())}
             onClick={() => {
-              if (enabled) onEnable(provider, apiKey.trim());
+              if (enabled && provider) onEnable(provider, apiKey.trim());
               else onDisable();
               onClose();
             }}
