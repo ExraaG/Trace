@@ -8,7 +8,6 @@ import {
   Check,
   ChevronDown,
   CircleDot,
-  Code2,
   Columns3,
   FolderOpen,
   LoaderCircle,
@@ -34,6 +33,7 @@ import { BuildOutput } from "./components/BuildOutput";
 import { PackageInstallBar } from "./components/PackageInstallBar";
 import { SerialConsole } from "./components/SerialConsole";
 import { StartupSplash } from "./components/StartupSplash";
+import { TraceMark } from "./components/TraceMark";
 import { DEFAULT_SETTINGS, PRESET_LAYOUTS, readSettings, writeSettings } from "./lib/settings";
 import type {
   AiProvider,
@@ -658,7 +658,7 @@ function App() {
       <main className="grid h-screen place-items-center bg-canvas text-zinc-400">
         <div className="flex items-center gap-3 text-sm">
           <span className="grid h-8 w-8 place-items-center rounded-lg bg-orange-500/15 text-orange-400">
-            <Code2 size={17} />
+            <TraceMark className="h-[18px] w-[18px]" />
           </span>
           <span>Loading Trace…</span>
           <LoaderCircle size={14} className="animate-spin" />
@@ -671,7 +671,9 @@ function App() {
     <main className="flex h-screen min-h-[520px] flex-col overflow-hidden bg-canvas text-zinc-200">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line bg-panel px-3">
         <div className="mr-2 flex items-center gap-2" title="Trace">
-          <span className="grid h-7 w-7 place-items-center rounded-md bg-orange-500/15 text-orange-400"><Code2 size={16} strokeWidth={2.2} /></span>
+          <span className="grid h-7 w-7 place-items-center rounded-md border border-zinc-700/80 bg-zinc-900 text-zinc-100">
+            <TraceMark className="h-4 w-4" />
+          </span>
           <span className="text-sm font-semibold tracking-wide text-zinc-100">Trace</span>
         </div>
 
