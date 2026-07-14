@@ -390,15 +390,16 @@ function App() {
     }
   };
 
-  const enableAi = (provider: AiProvider, apiKey: string, customUrl: string, customModel: string) => {
+  const enableAi = (provider: AiProvider, apiKey: string, customUrl: string, model: string) => {
     updateSettings((current) => ({
       ...current,
       onboardingComplete: true,
       aiEnabled: true,
       aiProvider: provider,
       apiKeys: { ...current.apiKeys, [provider]: apiKey },
+      aiModels: { ...current.aiModels, [provider]: model },
       customProviderUrl: customUrl,
-      customProviderModel: customModel,
+      customProviderModel: provider === "custom" ? model : current.customProviderModel,
       layout: {
         ...current.layout,
         preset: "custom",
@@ -625,10 +626,16 @@ function App() {
               <AiAssistant
                 provider={settings.aiProvider}
                 apiKey={apiKey}
+                model={settings.aiModels[settings.aiProvider] ?? settings.customProviderModel}
                 customUrl={settings.customProviderUrl}
-                customModel={settings.customProviderModel}
+                currentCode={code}
                 explainPrompt={explainPrompt}
                 onExplainConsumed={() => setExplainPrompt(null)}
+                onReplaceCode={(replacement) => {
+                  setCode(replacement);
+                  setDirty(true);
+                  setCompileSucceeded(false);
+                }}
               />
             </Panel>
           </>

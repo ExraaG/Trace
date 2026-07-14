@@ -1,12 +1,12 @@
-import { Bot, ExternalLink, KeyRound, X } from "lucide-react";
-import { useEffect, useState } from "react";
-import { PROVIDERS } from "../ai/providers";
-import type { AiProvider, AppSettings } from "../types";
+import { Bot, ExternalLink, KeyRound, RefreshCw, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { listProviderModels, PROVIDERS } from "../ai/providers";
+import type { AiModel, AiProvider, AppSettings } from "../types";
 
 interface AiSettingsModalProps {
   firstLaunch: boolean;
   settings: AppSettings;
-  onEnable: (provider: AiProvider, apiKey: string, customUrl: string, customModel: string) => void;
+  onEnable: (provider: AiProvider, apiKey: string, customUrl: string, model: string) => void;
   onDisable: () => void;
   onClose: () => void;
 }
@@ -16,14 +16,49 @@ export function AiSettingsModal({ firstLaunch, settings, onEnable, onDisable, on
   const [provider, setProvider] = useState<AiProvider | "">(firstLaunch ? "" : settings.aiProvider);
   const [apiKey, setApiKey] = useState(settings.apiKeys[settings.aiProvider] ?? "");
   const [customUrl, setCustomUrl] = useState(settings.customProviderUrl);
-  const [customModel, setCustomModel] = useState(settings.customProviderModel);
+  const [model, setModel] = useState(settings.aiModels[settings.aiProvider] ?? settings.customProviderModel);
+  const [models, setModels] = useState<AiModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const modelRequest = useRef(0);
   const selectedProvider = provider ? PROVIDERS[provider] : null;
   const keyMissing = Boolean(selectedProvider?.keyRequired && !apiKey.trim());
-  const customMissing = provider === "custom" && (!customUrl.trim() || !customModel.trim());
+  const customMissing = provider === "custom" && !customUrl.trim();
+  const modelMissing = !model.trim();
 
   useEffect(() => {
+    modelRequest.current += 1;
+    setModelsLoading(false);
     setApiKey(provider ? settings.apiKeys[provider] ?? "" : "");
-  }, [provider, settings.apiKeys]);
+    setModel(provider ? settings.aiModels[provider] ?? PROVIDERS[provider].defaultModel : "");
+    setModels([]);
+    setModelsError(null);
+  }, [provider, settings.aiModels, settings.apiKeys]);
+
+  const loadModels = useCallback(async () => {
+    if (!provider || (PROVIDERS[provider].keyRequired && !apiKey.trim()) || (provider === "custom" && !customUrl.trim())) return;
+    const request = ++modelRequest.current;
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const available = await listProviderModels(provider, apiKey.trim(), customUrl.trim());
+      if (request !== modelRequest.current) return;
+      setModels(available);
+      setModel((current) => available.some((item) => item.id === current) ? current : available[0]?.id ?? current);
+    } catch (reason) {
+      if (request !== modelRequest.current) return;
+      setModels([]);
+      setModelsError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (request === modelRequest.current) setModelsLoading(false);
+    }
+  }, [apiKey, customUrl, provider]);
+
+  useEffect(() => {
+    if (!enabled || !provider || keyMissing || customMissing) return;
+    const timer = window.setTimeout(() => void loadModels(), 600);
+    return () => window.clearTimeout(timer);
+  }, [customMissing, enabled, keyMissing, loadModels, provider]);
 
   const decline = () => {
     onDisable();
@@ -81,15 +116,6 @@ export function AiSettingsModal({ firstLaunch, settings, onEnable, onDisable, on
                   spellCheck={false}
                 />
               </label>
-              <label className="settings-field">
-                <span>Model</span>
-                <input
-                  value={customModel}
-                  onChange={(event) => setCustomModel(event.target.value)}
-                  placeholder="local-model"
-                  spellCheck={false}
-                />
-              </label>
               <p className="-mt-2 text-[11px] leading-5 text-amber-300/70">
                 Chat content and the optional bearer token are sent directly to this URL.
               </p>
@@ -117,15 +143,42 @@ export function AiSettingsModal({ firstLaunch, settings, onEnable, onDisable, on
               Create a {selectedProvider.label} API key <ExternalLink size={11} />
             </a>
           )}
+          {selectedProvider && (
+            <label className="settings-field">
+              <span className="flex items-center justify-between">
+                <span>Model</span>
+                <button
+                  className="inline-flex items-center gap-1 text-[10px] font-normal text-zinc-500 hover:text-zinc-300 disabled:opacity-40"
+                  type="button"
+                  onClick={() => void loadModels()}
+                  disabled={modelsLoading || keyMissing || customMissing}
+                >
+                  <RefreshCw size={10} className={modelsLoading ? "spin-centered" : ""} />
+                  {modelsLoading ? "Checking API…" : "Refresh models"}
+                </button>
+              </span>
+              <select value={model} onChange={(event) => setModel(event.target.value)} disabled={modelsLoading && models.length === 0}>
+                {!models.some((item) => item.id === model) && model && <option value={model}>{model}</option>}
+                {models.map((item) => <option key={item.id} value={item.id}>{item.label}{item.label !== item.id ? ` · ${item.id}` : ""}</option>)}
+              </select>
+            </label>
+          )}
+          {provider === "custom" && (
+            <label className="settings-field">
+              <span>Manual model ID</span>
+              <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="local-model" spellCheck={false} />
+            </label>
+          )}
+          {modelsError && <p className="-mt-2 text-[11px] leading-5 text-red-300">Could not load models: {modelsError}</p>}
         </div>
 
         <div className="mt-6 flex items-center justify-end gap-2">
           <button className="toolbar-button" onClick={firstLaunch ? decline : onClose}>{firstLaunch ? "Not now" : "Cancel"}</button>
           <button
             className={`action-button ${enabled ? "bg-orange-500 text-zinc-950 hover:bg-orange-400" : "bg-zinc-700 text-zinc-200 hover:bg-zinc-600"}`}
-            disabled={enabled && (!provider || keyMissing || customMissing)}
+            disabled={enabled && (!provider || keyMissing || customMissing || modelMissing)}
             onClick={() => {
-              if (enabled && provider) onEnable(provider, apiKey.trim(), customUrl.trim(), customModel.trim());
+              if (enabled && provider) onEnable(provider, apiKey.trim(), customUrl.trim(), model.trim());
               else onDisable();
               onClose();
             }}

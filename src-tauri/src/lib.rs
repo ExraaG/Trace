@@ -17,7 +17,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tokio::{io::AsyncBufReadExt, process::Command, sync::Mutex as AsyncMutex};
 
 const DEFAULT_ESP32_FQBN: &str = "esp32:esp32:esp32";
-const AI_SYSTEM_PROMPT: &str = "You are the optional Trace IDE assistant. Help with ESP32, Arduino, C++, build errors, uploads, and embedded debugging. Be concise, practical, and explicit when uncertain. Prefer the smallest safe fix. You only know code or logs the user deliberately includes in chat.";
+const AI_SYSTEM_PROMPT: &str = "You are the optional Trace IDE assistant. Help with ESP32, Arduino, C++, build errors, uploads, and embedded debugging. Be concise, practical, and explicit when uncertain. Prefer the smallest safe fix. You only know code or logs the user deliberately includes in chat. When a request includes <trace-current-code> and asks you to write or change the open sketch, return the complete replacement sketch inside exactly one <trace-code>...</trace-code> block. Never put partial code in that block.";
 
 fn arduino_cli_binary_name() -> &'static str {
     if cfg!(windows) {
@@ -96,68 +96,17 @@ struct AiMessage {
     content: String,
 }
 
-#[derive(Deserialize)]
-struct OpenAiResponse {
-    #[serde(default)]
-    output: Vec<OpenAiOutput>,
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiStreamChunk<'a> {
+    request_id: &'a str,
+    delta: &'a str,
 }
 
-#[derive(Deserialize)]
-struct OpenAiOutput {
-    #[serde(default)]
-    content: Vec<OpenAiContent>,
-}
-
-#[derive(Deserialize)]
-struct OpenAiContent {
-    #[serde(default)]
-    text: String,
-}
-
-#[derive(Deserialize)]
-struct AnthropicResponse {
-    #[serde(default)]
-    content: Vec<AnthropicContent>,
-}
-
-#[derive(Deserialize)]
-struct AnthropicContent {
-    #[serde(default)]
-    text: String,
-}
-
-#[derive(Deserialize)]
-struct GeminiResponse {
-    #[serde(default)]
-    steps: Vec<GeminiStep>,
-}
-
-#[derive(Deserialize)]
-struct GeminiStep {
-    #[serde(default)]
-    content: Vec<GeminiContent>,
-}
-
-#[derive(Deserialize)]
-struct GeminiContent {
-    #[serde(default)]
-    text: String,
-}
-
-#[derive(Deserialize)]
-struct CompatibleChatResponse {
-    #[serde(default)]
-    choices: Vec<CompatibleChatChoice>,
-}
-
-#[derive(Deserialize)]
-struct CompatibleChatChoice {
-    message: CompatibleChatMessage,
-}
-
-#[derive(Deserialize)]
-struct CompatibleChatMessage {
-    content: String,
+#[derive(Debug, Serialize)]
+struct AiModel {
+    id: String,
+    label: String,
 }
 
 #[derive(Default)]
@@ -578,21 +527,98 @@ async fn provider_error(response: reqwest::Response, provider: &str) -> String {
     }
 }
 
+fn emit_ai_delta(app: &AppHandle, request_id: &str, delta: &str) -> Result<(), String> {
+    app.emit("ai-stream", AiStreamChunk { request_id, delta })
+        .map_err(|error| format!("Could not update the AI panel: {error}"))
+}
+
+fn dispatch_sse_event<F>(data_lines: &mut Vec<String>, on_data: &mut F) -> Result<(), String>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    if data_lines.is_empty() {
+        return Ok(());
+    }
+    let data = data_lines.join("\n");
+    data_lines.clear();
+    if data != "[DONE]" {
+        on_data(&data)?;
+    }
+    Ok(())
+}
+
+async fn read_sse<F>(
+    mut response: reqwest::Response,
+    provider: &str,
+    mut on_data: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    let mut pending = Vec::<u8>::new();
+    let mut data_lines = Vec::<String>::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("{provider} stream failed: {error}"))?
+    {
+        pending.extend_from_slice(&chunk);
+        while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+            let mut line = pending.drain(..=end).collect::<Vec<_>>();
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            let line = std::str::from_utf8(&line)
+                .map_err(|_| format!("{provider} returned invalid stream text."))?;
+            if line.is_empty() {
+                dispatch_sse_event(&mut data_lines, &mut on_data)?;
+            } else if let Some(data) = line.strip_prefix("data:") {
+                data_lines.push(data.trim_start().to_owned());
+            }
+        }
+    }
+    if !pending.is_empty() {
+        let line = std::str::from_utf8(&pending)
+            .map_err(|_| format!("{provider} returned invalid stream text."))?;
+        if let Some(data) = line.strip_prefix("data:") {
+            data_lines.push(data.trim_start().to_owned());
+        }
+    }
+    dispatch_sse_event(&mut data_lines, &mut on_data)
+}
+
+fn stream_api_error(value: &Value) -> Option<String> {
+    value
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .pointer("/response/error/message")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| value.get("message").and_then(Value::as_str))
+        .map(str::to_owned)
+}
+
 async fn ask_openai(
+    app: &AppHandle,
+    request_id: &str,
     client: &reqwest::Client,
     api_key: &str,
+    model: &str,
     messages: &[AiMessage],
 ) -> Result<String, String> {
     let response = client
         .post("https://api.openai.com/v1/responses")
         .bearer_auth(api_key)
         .json(&json!({
-            "model": "gpt-5.6-luna",
+            "model": model,
             "instructions": AI_SYSTEM_PROMPT,
             "input": messages,
-            "max_output_tokens": 2048,
-            "reasoning": { "effort": "low" },
-            "store": false
+            "max_output_tokens": 4096,
+            "store": false,
+            "stream": true
         }))
         .send()
         .await
@@ -600,26 +626,36 @@ async fn ask_openai(
     if !response.status().is_success() {
         return Err(provider_error(response, "OpenAI").await);
     }
-    let value = response
-        .json::<OpenAiResponse>()
-        .await
-        .map_err(|error| format!("OpenAI returned an unreadable response: {error}"))?;
-    let text = value
-        .output
-        .into_iter()
-        .flat_map(|item| item.content)
-        .map(|content| content.text)
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (!text.trim().is_empty())
-        .then_some(text)
+    let mut output = String::new();
+    read_sse(response, "OpenAI", |data| {
+        let value: Value = serde_json::from_str(data)
+            .map_err(|error| format!("OpenAI returned an unreadable stream event: {error}"))?;
+        if value.get("type").and_then(Value::as_str) == Some("response.output_text.delta") {
+            if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                emit_ai_delta(app, request_id, delta)?;
+                output.push_str(delta);
+            }
+        } else if matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("error" | "response.failed")
+        ) {
+            return Err(stream_api_error(&value)
+                .unwrap_or_else(|| "OpenAI could not complete the response.".to_owned()));
+        }
+        Ok(())
+    })
+    .await?;
+    (!output.trim().is_empty())
+        .then_some(output)
         .ok_or_else(|| "OpenAI returned no text response.".to_owned())
 }
 
 async fn ask_anthropic(
+    app: &AppHandle,
+    request_id: &str,
     client: &reqwest::Client,
     api_key: &str,
+    model: &str,
     messages: &[AiMessage],
 ) -> Result<String, String> {
     let response = client
@@ -627,10 +663,11 @@ async fn ask_anthropic(
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
         .json(&json!({
-            "model": "claude-sonnet-5",
+            "model": model,
             "system": AI_SYSTEM_PROMPT,
             "messages": messages,
-            "max_tokens": 2048
+            "max_tokens": 4096,
+            "stream": true
         }))
         .send()
         .await
@@ -638,48 +675,62 @@ async fn ask_anthropic(
     if !response.status().is_success() {
         return Err(provider_error(response, "Anthropic").await);
     }
-    let value = response
-        .json::<AnthropicResponse>()
-        .await
-        .map_err(|error| format!("Anthropic returned an unreadable response: {error}"))?;
-    let text = value
-        .content
-        .into_iter()
-        .map(|content| content.text)
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (!text.trim().is_empty())
-        .then_some(text)
+    let mut output = String::new();
+    read_sse(response, "Anthropic", |data| {
+        let value: Value = serde_json::from_str(data)
+            .map_err(|error| format!("Anthropic returned an unreadable stream event: {error}"))?;
+        if value.get("type").and_then(Value::as_str) == Some("content_block_delta")
+            && value.pointer("/delta/type").and_then(Value::as_str) == Some("text_delta")
+        {
+            if let Some(delta) = value.pointer("/delta/text").and_then(Value::as_str) {
+                emit_ai_delta(app, request_id, delta)?;
+                output.push_str(delta);
+            }
+        } else if value.get("type").and_then(Value::as_str) == Some("error") {
+            return Err(stream_api_error(&value)
+                .unwrap_or_else(|| "Anthropic could not complete the response.".to_owned()));
+        }
+        Ok(())
+    })
+    .await?;
+    (!output.trim().is_empty())
+        .then_some(output)
         .ok_or_else(|| "Anthropic returned no text response.".to_owned())
 }
 
 async fn ask_gemini(
+    app: &AppHandle,
+    request_id: &str,
     client: &reqwest::Client,
     api_key: &str,
+    model: &str,
     messages: &[AiMessage],
 ) -> Result<String, String> {
-    let transcript = messages
+    let model = model.strip_prefix("models/").unwrap_or(model);
+    if !model
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+    {
+        return Err("Google Gemini returned an invalid model identifier.".to_owned());
+    }
+    let contents = messages
         .iter()
         .map(|message| {
-            let speaker = if message.role == "assistant" {
-                "Assistant"
-            } else {
-                "User"
-            };
-            format!("{speaker}: {}", message.content)
+            json!({
+                "role": if message.role == "assistant" { "model" } else { "user" },
+                "parts": [{ "text": message.content }]
+            })
         })
-        .collect::<Vec<_>>()
-        .join("\n\n");
+        .collect::<Vec<_>>();
     let response = client
-        .post("https://generativelanguage.googleapis.com/v1beta/interactions")
+        .post(format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
+        ))
         .header("x-goog-api-key", api_key)
         .json(&json!({
-            "model": "gemini-3.5-flash",
-            "system_instruction": AI_SYSTEM_PROMPT,
-            "input": transcript,
-            "generation_config": { "thinking_level": "low" },
-            "store": false
+            "systemInstruction": { "parts": [{ "text": AI_SYSTEM_PROMPT }] },
+            "contents": contents,
+            "generationConfig": { "maxOutputTokens": 4096 }
         }))
         .send()
         .await
@@ -687,45 +738,69 @@ async fn ask_gemini(
     if !response.status().is_success() {
         return Err(provider_error(response, "Google Gemini").await);
     }
-    let value = response
-        .json::<GeminiResponse>()
-        .await
-        .map_err(|error| format!("Google Gemini returned an unreadable response: {error}"))?;
-    let text = value
-        .steps
-        .into_iter()
-        .rev()
-        .find_map(|step| {
-            let text = step
-                .content
-                .into_iter()
-                .map(|content| content.text)
-                .filter(|text| !text.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            (!text.is_empty()).then_some(text)
-        })
-        .unwrap_or_default();
-    (!text.trim().is_empty())
-        .then_some(text)
+    let mut output = String::new();
+    read_sse(response, "Google Gemini", |data| {
+        let value: Value = serde_json::from_str(data).map_err(|error| {
+            format!("Google Gemini returned an unreadable stream event: {error}")
+        })?;
+        if let Some(message) = stream_api_error(&value) {
+            return Err(message);
+        }
+        if let Some(parts) = value
+            .pointer("/candidates/0/content/parts")
+            .and_then(Value::as_array)
+        {
+            for delta in parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+            {
+                emit_ai_delta(app, request_id, delta)?;
+                output.push_str(delta);
+            }
+        }
+        Ok(())
+    })
+    .await?;
+    (!output.trim().is_empty())
+        .then_some(output)
         .ok_or_else(|| "Google Gemini returned no text response.".to_owned())
 }
 
+fn custom_url(endpoint: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(endpoint)
+        .map_err(|error| format!("The custom provider URL is invalid: {error}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("The custom provider URL must use http:// or https://.".to_owned());
+    }
+    Ok(url)
+}
+
+fn custom_models_url(endpoint: &str) -> Result<reqwest::Url, String> {
+    let mut url = custom_url(endpoint)?;
+    let path = url.path().trim_end_matches('/');
+    let models_path = if let Some(base) = path.strip_suffix("/chat/completions") {
+        format!("{base}/models")
+    } else if let Some(base) = path.strip_suffix("/responses") {
+        format!("{base}/models")
+    } else {
+        format!("{path}/models")
+    };
+    url.set_path(&models_path);
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
 async fn ask_custom(
+    app: &AppHandle,
+    request_id: &str,
     client: &reqwest::Client,
     api_key: &str,
     messages: &[AiMessage],
     endpoint: &str,
     model: &str,
 ) -> Result<String, String> {
-    let url = reqwest::Url::parse(endpoint)
-        .map_err(|error| format!("The custom provider URL is invalid: {error}"))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err("The custom provider URL must use http:// or https://.".to_owned());
-    }
-    if model.trim().is_empty() {
-        return Err("Add a model name for the custom provider.".to_owned());
-    }
+    let url = custom_url(endpoint)?;
     let mut compatible_messages = vec![json!({
         "role": "system",
         "content": AI_SYSTEM_PROMPT
@@ -738,8 +813,8 @@ async fn ask_custom(
     let mut request = client.post(url).json(&json!({
         "model": model,
         "messages": compatible_messages,
-        "max_tokens": 2048,
-        "stream": false
+        "max_tokens": 4096,
+        "stream": true
     }));
     if !api_key.trim().is_empty() {
         request = request.bearer_auth(api_key.trim());
@@ -751,34 +826,200 @@ async fn ask_custom(
     if !response.status().is_success() {
         return Err(provider_error(response, "Custom provider").await);
     }
-    let value = response
-        .json::<CompatibleChatResponse>()
-        .await
-        .map_err(|error| format!("The custom provider returned an unreadable response: {error}"))?;
-    let text = value
-        .choices
-        .into_iter()
-        .next()
-        .map(|choice| choice.message.content)
-        .unwrap_or_default();
-    (!text.trim().is_empty())
-        .then_some(text)
+    let is_stream = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream"));
+    let mut output = String::new();
+    if is_stream {
+        read_sse(response, "Custom provider", |data| {
+            let value: Value = serde_json::from_str(data).map_err(|error| {
+                format!("The custom provider returned an unreadable stream event: {error}")
+            })?;
+            if let Some(message) = stream_api_error(&value) {
+                return Err(message);
+            }
+            if let Some(delta) = value
+                .pointer("/choices/0/delta/content")
+                .and_then(Value::as_str)
+            {
+                emit_ai_delta(app, request_id, delta)?;
+                output.push_str(delta);
+            }
+            Ok(())
+        })
+        .await?;
+    } else {
+        let value = response.json::<Value>().await.map_err(|error| {
+            format!("The custom provider returned an unreadable response: {error}")
+        })?;
+        let text = value
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "The custom provider returned no text response.".to_owned())?;
+        emit_ai_delta(app, request_id, text)?;
+        output.push_str(text);
+    }
+    (!output.trim().is_empty())
+        .then_some(output)
         .ok_or_else(|| "The custom provider returned no text response.".to_owned())
+}
+
+fn parse_openai_models(value: &Value) -> Vec<AiModel> {
+    value
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|model| model.get("id").and_then(Value::as_str))
+        .map(|id| AiModel {
+            id: id.to_owned(),
+            label: id.to_owned(),
+        })
+        .collect()
+}
+
+#[tauri::command]
+async fn list_ai_models(
+    provider: String,
+    api_key: String,
+    custom_url: Option<String>,
+) -> Result<Vec<AiModel>, String> {
+    if provider != "custom" && api_key.trim().is_empty() {
+        return Err("Enter an API key before loading models.".to_owned());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(25))
+        .build()
+        .map_err(|error| format!("Could not initialize the AI client: {error}"))?;
+    let response = match provider.as_str() {
+        "openai" => client
+            .get("https://api.openai.com/v1/models")
+            .bearer_auth(api_key.trim())
+            .send()
+            .await
+            .map_err(|error| format!("Could not reach OpenAI: {error}"))?,
+        "anthropic" => client
+            .get("https://api.anthropic.com/v1/models?limit=1000")
+            .header("x-api-key", api_key.trim())
+            .header("anthropic-version", "2023-06-01")
+            .send()
+            .await
+            .map_err(|error| format!("Could not reach Anthropic: {error}"))?,
+        "gemini" => client
+            .get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000")
+            .header("x-goog-api-key", api_key.trim())
+            .send()
+            .await
+            .map_err(|error| format!("Could not reach Google Gemini: {error}"))?,
+        "custom" => {
+            let endpoint = custom_url.as_deref().unwrap_or_default();
+            let mut request = client.get(custom_models_url(endpoint)?);
+            if !api_key.trim().is_empty() {
+                request = request.bearer_auth(api_key.trim());
+            }
+            request
+                .send()
+                .await
+                .map_err(|error| format!("Could not reach the custom provider: {error}"))?
+        }
+        _ => return Err("Unsupported AI provider.".to_owned()),
+    };
+    if !response.status().is_success() {
+        let label = match provider.as_str() {
+            "openai" => "OpenAI",
+            "anthropic" => "Anthropic",
+            "gemini" => "Google Gemini",
+            _ => "Custom provider",
+        };
+        return Err(provider_error(response, label).await);
+    }
+    let value = response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("The provider returned an unreadable model list: {error}"))?;
+    let mut models = match provider.as_str() {
+        "anthropic" => value
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|model| {
+                let id = model.get("id")?.as_str()?;
+                let label = model
+                    .get("display_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(id);
+                Some(AiModel {
+                    id: id.to_owned(),
+                    label: label.to_owned(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "gemini" => value
+            .get("models")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|model| {
+                model
+                    .get("supportedGenerationMethods")
+                    .and_then(Value::as_array)
+                    .is_some_and(|methods| {
+                        methods
+                            .iter()
+                            .any(|method| method.as_str() == Some("generateContent"))
+                    })
+            })
+            .filter_map(|model| {
+                let raw_id = model
+                    .get("baseModelId")
+                    .and_then(Value::as_str)
+                    .or_else(|| model.get("name").and_then(Value::as_str))?;
+                let id = raw_id.strip_prefix("models/").unwrap_or(raw_id);
+                let label = model
+                    .get("displayName")
+                    .and_then(Value::as_str)
+                    .unwrap_or(id);
+                Some(AiModel {
+                    id: id.to_owned(),
+                    label: label.to_owned(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        _ => parse_openai_models(&value),
+    };
+    models.sort_by(|left, right| left.id.cmp(&right.id));
+    models.dedup_by(|left, right| left.id == right.id);
+    models.sort_by_key(|model| model.label.to_lowercase());
+    if models.is_empty() {
+        return Err("The provider did not return any compatible text models.".to_owned());
+    }
+    Ok(models)
 }
 
 #[tauri::command]
 async fn ask_ai(
+    app: AppHandle,
+    request_id: String,
     provider: String,
     api_key: String,
+    model: String,
     messages: Vec<AiMessage>,
     custom_url: Option<String>,
-    custom_model: Option<String>,
 ) -> Result<String, String> {
     if provider != "custom" && api_key.trim().is_empty() {
         return Err("Add an API key in Trace settings first.".to_owned());
     }
     if messages.is_empty() {
         return Err("Enter a question for the assistant.".to_owned());
+    }
+    if request_id.trim().is_empty() {
+        return Err("The assistant request is missing its stream identifier.".to_owned());
+    }
+    if model.trim().is_empty() {
+        return Err("Select an AI model in Trace settings first.".to_owned());
     }
     if messages.iter().any(|message| {
         !matches!(message.role.as_str(), "user" | "assistant") || message.content.trim().is_empty()
@@ -796,20 +1037,52 @@ async fn ask_ai(
     }
 
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
+        .timeout(Duration::from_secs(180))
         .build()
         .map_err(|error| format!("Could not initialize the AI client: {error}"))?;
     match provider.as_str() {
-        "openai" => ask_openai(&client, api_key.trim(), &messages).await,
-        "anthropic" => ask_anthropic(&client, api_key.trim(), &messages).await,
-        "gemini" => ask_gemini(&client, api_key.trim(), &messages).await,
+        "openai" => {
+            ask_openai(
+                &app,
+                &request_id,
+                &client,
+                api_key.trim(),
+                model.trim(),
+                &messages,
+            )
+            .await
+        }
+        "anthropic" => {
+            ask_anthropic(
+                &app,
+                &request_id,
+                &client,
+                api_key.trim(),
+                model.trim(),
+                &messages,
+            )
+            .await
+        }
+        "gemini" => {
+            ask_gemini(
+                &app,
+                &request_id,
+                &client,
+                api_key.trim(),
+                model.trim(),
+                &messages,
+            )
+            .await
+        }
         "custom" => {
             ask_custom(
+                &app,
+                &request_id,
                 &client,
                 api_key.trim(),
                 &messages,
                 custom_url.as_deref().unwrap_or_default(),
-                custom_model.as_deref().unwrap_or_default(),
+                model.trim(),
             )
             .await
         }
@@ -832,6 +1105,7 @@ pub fn run() {
             open_serial,
             close_serial,
             write_serial,
+            list_ai_models,
             ask_ai
         ])
         .build(tauri::generate_context!())
@@ -884,6 +1158,22 @@ mod tests {
                 port: "COM4".to_owned(),
                 fqbn: DEFAULT_ESP32_FQBN.to_owned(),
             }]
+        );
+    }
+
+    #[test]
+    fn derives_models_url_from_compatible_chat_endpoint() {
+        assert_eq!(
+            custom_models_url("http://localhost:11434/v1/chat/completions")
+                .unwrap()
+                .as_str(),
+            "http://localhost:11434/v1/models"
+        );
+        assert_eq!(
+            custom_models_url("https://example.test/v1/responses?ignored=true")
+                .unwrap()
+                .as_str(),
+            "https://example.test/v1/models"
         );
     }
 }

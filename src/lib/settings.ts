@@ -35,6 +35,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiEnabled: false,
   aiProvider: "anthropic",
   apiKeys: {},
+  aiModels: {
+    anthropic: "claude-sonnet-5",
+    openai: "gpt-5.6-luna",
+    gemini: "gemini-3.5-flash",
+    custom: "local-model",
+  },
   customProviderUrl: "http://localhost:11434/v1/chat/completions",
   customProviderModel: "local-model",
   serialTimestamps: false,
@@ -75,11 +81,17 @@ function mergeSettings(value: Partial<AppSettings> | null | undefined): AppSetti
       ([id, key]) => PROVIDER_IDS.includes(id as AiProvider) && typeof key === "string",
     ),
   ) as AppSettings["apiKeys"];
+  const aiModels = Object.fromEntries(
+    Object.entries(value.aiModels ?? {}).filter(
+      ([id, model]) => PROVIDER_IDS.includes(id as AiProvider) && typeof model === "string" && model.trim(),
+    ),
+  ) as AppSettings["aiModels"];
   return {
     onboardingComplete: typeof value.onboardingComplete === "boolean" ? value.onboardingComplete : false,
     aiEnabled: typeof value.aiEnabled === "boolean" ? value.aiEnabled : false,
     aiProvider: provider,
     apiKeys,
+    aiModels: { ...DEFAULT_SETTINGS.aiModels, ...aiModels },
     customProviderUrl: typeof value.customProviderUrl === "string" ? value.customProviderUrl : DEFAULT_SETTINGS.customProviderUrl,
     customProviderModel: typeof value.customProviderModel === "string" ? value.customProviderModel : DEFAULT_SETTINGS.customProviderModel,
     serialTimestamps: typeof value.serialTimestamps === "boolean" ? value.serialTimestamps : false,

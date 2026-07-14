@@ -168,6 +168,27 @@
     @apply border-orange-900/40 bg-orange-500/5;
   }
 
+  .ai-apply-code {
+    @apply mt-1.5 inline-flex items-center gap-1.5 rounded border border-orange-900/60 bg-orange-500/5 px-2 py-1 text-[10px] text-orange-300 transition hover:bg-orange-500/10;
+  }
+
+  .ai-spinner {
+    width: 0.8125rem;
+    height: 0.8125rem;
+    flex: none;
+    border: 2px solid #52525b;
+    border-right-color: #fb923c;
+    border-radius: 9999px;
+    transform-origin: 50% 50%;
+    animation: trace-spin 750ms linear infinite;
+  }
+
+  .spin-centered {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: trace-spin 750ms linear infinite;
+  }
+
   .ai-input {
     @apply flex shrink-0 items-end gap-2 border-t border-line p-2;
   }
@@ -181,7 +202,7 @@
   }
 
   .modal-card {
-    @apply relative w-full max-w-lg rounded-xl border border-zinc-700 bg-[#111114] p-6 shadow-2xl shadow-black/60;
+    @apply relative max-h-[calc(100vh-3rem)] w-full max-w-lg overflow-y-auto rounded-xl border border-zinc-700 bg-[#111114] p-6 shadow-2xl shadow-black/60;
   }
 
   .settings-field {
@@ -252,5 +273,11 @@
   .settings-toggle input:focus-visible {
     outline: 2px solid #fb923c;
     outline-offset: 2px;
+  }
+}
+
+@keyframes trace-spin {
+  to {
+    transform: rotate(360deg);
   }
 }

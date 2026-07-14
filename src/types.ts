@@ -48,6 +48,16 @@ export interface AiMessage {
   content: string;
 }
 
+export interface AiModel {
+  id: string;
+  label: string;
+}
+
+export interface AiStreamChunk {
+  requestId: string;
+  delta: string;
+}
+
 export type LayoutPreset = "focus" | "debug" | "full" | "custom";
 
 export interface PanelLayout {
@@ -64,6 +74,7 @@ export interface AppSettings {
   aiEnabled: boolean;
   aiProvider: AiProvider;
   apiKeys: Partial<Record<AiProvider, string>>;
+  aiModels: Partial<Record<AiProvider, string>>;
   customProviderUrl: string;
   customProviderModel: string;
   serialTimestamps: boolean;
