@@ -45,6 +45,7 @@
   width: 8.5rem;
   overflow: visible;
   transform: translateZ(0);
+  shape-rendering: geometricPrecision;
 }
 
 .startup-logo-shell {
@@ -82,11 +83,7 @@
 .startup-node {
   fill: #f97316;
   opacity: 0;
-  transform: scale(0);
-  transform-box: fill-box;
-  transform-origin: center;
-  will-change: opacity, transform;
-  animation: startup-node-on 260ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  animation: startup-node-on 380ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 .startup-node-one { animation-delay: 520ms; }
@@ -120,11 +117,10 @@
 }
 
 .startup-status span {
-  width: 0.35rem;
-  height: 0.35rem;
+  width: 0.45rem;
+  height: 0.45rem;
   border-radius: 9999px;
-  background: #f97316;
-  box-shadow: 0 0 9px #f97316;
+  background: radial-gradient(circle, #fff 0 12%, #fb923c 28%, #f97316 52%, transparent 72%);
   animation: startup-status-pulse 750ms ease-in-out infinite alternate;
 }
 
@@ -142,12 +138,11 @@
 .startup-signal::after {
   content: "";
   position: absolute;
-  top: -2px;
-  width: 5px;
-  height: 5px;
+  top: -5px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
-  background: #fb923c;
-  box-shadow: 0 0 12px #f97316;
+  background: radial-gradient(circle, #fff 0 10%, #fdba74 24%, #f97316 48%, rgb(249 115 22 / 0.35) 64%, transparent 74%);
 }
 
 .startup-signal-left {
@@ -178,8 +173,9 @@
 }
 
 @keyframes startup-node-on {
-  65% { opacity: 1; }
-  100% { opacity: 1; transform: scale(1); }
+  0% { opacity: 0; }
+  45% { opacity: 0.35; }
+  100% { opacity: 1; }
 }
 
 @keyframes startup-wordmark-in {
@@ -191,7 +187,7 @@
 }
 
 @keyframes startup-status-pulse {
-  to { opacity: 0.35; box-shadow: 0 0 3px #f97316; }
+  to { opacity: 0.3; }
 }
 
 @media (prefers-reduced-motion: reduce) {
