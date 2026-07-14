@@ -128,6 +128,7 @@ function App() {
   const serialStartedAt = useRef(Date.now());
   const compileSucceededRef = useRef(compileSucceeded);
   const dirtyRef = useRef(dirty);
+  const filePathRef = useRef(filePath);
   const closeApprovedRef = useRef(false);
   const libraryDismissTimers = useRef(new Map<string, number>());
   const outerGroup = useGroupRef();
@@ -156,6 +157,10 @@ function App() {
   }, [dirty]);
 
   useEffect(() => {
+    filePathRef.current = filePath;
+  }, [filePath]);
+
+  useEffect(() => {
     compileSucceededRef.current = compileSucceeded;
   }, [compileSucceeded]);
 
@@ -163,7 +168,7 @@ function App() {
     let disposed = false;
     let stopListening: (() => void) | undefined;
     void getCurrentWindow().onCloseRequested(async (event) => {
-      if (closeApprovedRef.current || !dirtyRef.current) return;
+      if (closeApprovedRef.current || (!dirtyRef.current && filePathRef.current !== null)) return;
       event.preventDefault();
       const prompt = "Your sketch has unsaved changes. Close Trace and discard them?";
       const shouldClose = await confirm(prompt, {
