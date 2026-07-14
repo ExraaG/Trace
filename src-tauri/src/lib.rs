@@ -134,11 +134,22 @@ struct BoardListRoot {
 
 #[derive(Deserialize)]
 struct DetectedPort {
+    #[serde(default)]
     address: String,
     #[serde(default)]
     label: String,
-    #[serde(default)]
+    #[serde(default, alias = "matching_boards")]
     boards: Vec<DetectedBoard>,
+    #[serde(default)]
+    port: Option<DetectedPortDetails>,
+}
+
+#[derive(Deserialize)]
+struct DetectedPortDetails {
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    label: String,
 }
 
 #[derive(Deserialize)]
@@ -167,6 +178,17 @@ fn parse_board_list(bytes: &[u8]) -> Result<Vec<Board>, String> {
 
     let mut result = Vec::new();
     for port in root.detected_ports {
+        let address = if port.address.trim().is_empty() {
+            port.port
+                .as_ref()
+                .map(|details| details.address.trim())
+                .unwrap_or_default()
+        } else {
+            port.address.trim()
+        };
+        if address.is_empty() {
+            continue;
+        }
         let esp32 = port
             .boards
             .iter()
@@ -176,7 +198,14 @@ fn parse_board_list(bytes: &[u8]) -> Result<Vec<Board>, String> {
         let name = detected
             .map(|board| board.name.clone())
             .filter(|name| !name.trim().is_empty())
-            .or_else(|| (!port.label.trim().is_empty()).then_some(port.label))
+            .or_else(|| (!port.label.trim().is_empty()).then_some(port.label.clone()))
+            .or_else(|| {
+                port.port
+                    .as_ref()
+                    .map(|details| details.label.trim())
+                    .filter(|label| !label.is_empty())
+                    .map(str::to_owned)
+            })
             .unwrap_or_else(|| "ESP32 board".to_owned());
         let fqbn = esp32
             .map(|board| board.fqbn.clone())
@@ -184,7 +213,7 @@ fn parse_board_list(bytes: &[u8]) -> Result<Vec<Board>, String> {
             .unwrap_or_else(|| DEFAULT_ESP32_FQBN.to_owned());
         result.push(Board {
             name,
-            port: port.address,
+            port: address.to_owned(),
             fqbn,
         });
     }
@@ -1164,6 +1193,27 @@ mod tests {
             vec![Board {
                 name: "USB JTAG/serial debug unit".to_owned(),
                 port: "COM4".to_owned(),
+                fqbn: DEFAULT_ESP32_FQBN.to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_current_arduino_cli_nested_port_shape() {
+        let json = br#"{
+          "detected_ports": [{
+            "port": {
+              "address": "/dev/ttyUSB0",
+              "label": "/dev/ttyUSB0",
+              "protocol": "serial"
+            }
+          }]
+        }"#;
+        assert_eq!(
+            parse_board_list(json).unwrap(),
+            vec![Board {
+                name: "/dev/ttyUSB0".to_owned(),
+                port: "/dev/ttyUSB0".to_owned(),
                 fqbn: DEFAULT_ESP32_FQBN.to_owned(),
             }]
         );
