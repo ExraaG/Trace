@@ -1,4 +1,4 @@
-import { Bot, Code2, Send, Sparkles } from "lucide-react";
+import { Bot, Send, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { askProvider, PROVIDERS } from "../ai/providers";
 import type { AiMessage, AiProvider } from "../types";
@@ -11,7 +11,11 @@ interface AiAssistantProps {
   currentCode: string;
   explainPrompt: string | null;
   onExplainConsumed: () => void;
-  onReplaceCode: (code: string) => void;
+  onProposeCode: (code: string) => void;
+}
+
+interface ChatMessage extends AiMessage {
+  codeEdit?: boolean;
 }
 
 function isCodeWritingRequest(content: string) {
@@ -26,6 +30,16 @@ function extractReplacement(content: string) {
   return fenced?.[1]?.trim() ?? null;
 }
 
+function visibleMessage(message: ChatMessage) {
+  if (!message.codeEdit) return message.content;
+  const lower = message.content.toLowerCase();
+  const taggedStart = lower.indexOf("<trace-code>");
+  const fencedStart = message.content.indexOf("```");
+  const codeStart = [taggedStart, fencedStart].filter((index) => index >= 0).sort((left, right) => left - right)[0];
+  const explanation = (codeStart === undefined ? message.content : message.content.slice(0, codeStart)).trim();
+  return explanation || "Preparing code changes in the editor…";
+}
+
 export function AiAssistant({
   provider,
   apiKey,
@@ -34,9 +48,9 @@ export function AiAssistant({
   currentCode,
   explainPrompt,
   onExplainConsumed,
-  onReplaceCode,
+  onProposeCode,
 }: AiAssistantProps) {
-  const [messages, setMessages] = useState<AiMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,11 +67,11 @@ export function AiAssistant({
     endRef.current?.scrollIntoView({ block: "end" });
   }, [messages, loading]);
 
-  const applyReplacement = (response: string, automatic = false) => {
+  const proposeReplacement = (response: string) => {
     const replacement = extractReplacement(response);
     if (!replacement) return false;
-    onReplaceCode(replacement);
-    setEditorNotice(automatic ? "The generated sketch replaced the editor buffer." : "Code applied to the editor buffer.");
+    onProposeCode(replacement);
+    setEditorNotice("Proposed changes are open in the editor. Review the red and green diff, then apply or discard them.");
     return true;
   };
 
@@ -65,8 +79,9 @@ export function AiAssistant({
     const content = input.trim();
     if (!content || loading) return;
     const wantsCode = isCodeWritingRequest(content);
-    const displayedMessages = [...messages, { role: "user", content } satisfies AiMessage];
-    const requestMessages = displayedMessages.map((message, index) => {
+    const displayedMessages = [...messages, { role: "user", content } satisfies ChatMessage];
+    const requestMessages = displayedMessages.map(({ role, content: messageContent }, index) => {
+      const message = { role, content: messageContent } satisfies AiMessage;
       if (!wantsCode || index !== displayedMessages.length - 1) return message;
       return {
         ...message,
@@ -82,10 +97,10 @@ export function AiAssistant({
     try {
       const response = await askProvider(provider, apiKey, model, requestMessages, customUrl, (delta) => {
         streamed += delta;
-        setMessages([...displayedMessages, { role: "assistant", content: streamed }]);
+        setMessages([...displayedMessages, { role: "assistant", content: streamed, codeEdit: wantsCode }]);
       });
-      setMessages([...displayedMessages, { role: "assistant", content: response }]);
-      if (wantsCode && !applyReplacement(response, true)) {
+      setMessages([...displayedMessages, { role: "assistant", content: response, codeEdit: wantsCode }]);
+      if (wantsCode && !proposeReplacement(response)) {
         setEditorNotice("The model did not return a complete replacement sketch, so the editor was left unchanged.");
       }
     } catch (reason) {
@@ -114,20 +129,12 @@ export function AiAssistant({
             <span>{provider === "custom" ? `Requests go directly to ${customUrl}.` : `Requests go directly to ${PROVIDERS[provider].label} using your key.`}</span>
           </div>
         )}
-        {messages.map((message, index) => {
-          const replacement = message.role === "assistant" ? extractReplacement(message.content) : null;
-          return (
-            <div key={index} className={`ai-message ${message.role}`}>
-              <span>{message.role === "user" ? "You" : "Trace"}</span>
-              <p>{message.content}</p>
-              {replacement && (
-                <button className="ai-apply-code" type="button" onClick={() => applyReplacement(message.content)}>
-                  <Code2 size={12} /> Apply to editor
-                </button>
-              )}
-            </div>
-          );
-        })}
+        {messages.map((message, index) => (
+          <div key={index} className={`ai-message ${message.role}`}>
+            <span>{message.role === "user" ? "You" : "Trace"}</span>
+            <p>{visibleMessage(message)}</p>
+          </div>
+        ))}
         {loading && (
           <div className="flex items-center gap-2 text-xs text-zinc-500">
             <span className="ai-spinner" aria-hidden="true" /> Thinking…

@@ -1,4 +1,4 @@
-import Editor, { type Monaco } from "@monaco-editor/react";
+import Editor, { DiffEditor, type Monaco } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -59,6 +59,11 @@ void loop() {
 }
 `;
 
+interface AiEditProposal {
+  original: string;
+  modified: string;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -96,6 +101,7 @@ function App() {
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [explainPrompt, setExplainPrompt] = useState<string | null>(null);
+  const [aiEdit, setAiEdit] = useState<AiEditProposal | null>(null);
   const logId = useRef(0);
   const serialId = useRef(0);
   const serialStartedAt = useRef(Date.now());
@@ -273,6 +279,7 @@ function App() {
     try {
       const contents = await invoke<string>("read_sketch", { path });
       setCode(contents);
+      setAiEdit(null);
       setFilePath(path);
       setDirty(false);
       setCompileSucceeded(false);
@@ -470,8 +477,8 @@ function App() {
           <span className="text-sm font-semibold tracking-wide text-zinc-100">Trace</span>
         </div>
 
-        <button className="toolbar-button" onClick={openSketch} disabled={operation !== null}><FolderOpen size={14} /> Open</button>
-        <button className="toolbar-button" onClick={() => void saveAsSketch()} disabled={operation !== null}><Save size={14} /> Save As</button>
+        <button className="toolbar-button" onClick={openSketch} disabled={operation !== null || aiEdit !== null}><FolderOpen size={14} /> Open</button>
+        <button className="toolbar-button" onClick={() => void saveAsSketch()} disabled={operation !== null || aiEdit !== null}><Save size={14} /> Save As</button>
         <div className="mx-1 h-5 w-px bg-line" />
 
         <div className="select-wrap min-w-48 max-w-72 flex-1">
@@ -511,14 +518,14 @@ function App() {
         <button className="icon-button" onClick={() => setSettingsOpen(true)} title="Settings" aria-label="Settings"><Settings size={14} /></button>
 
         <div className="ml-auto flex items-center gap-2">
-          <button className="action-button border border-zinc-600 bg-zinc-100 text-zinc-950 hover:bg-white" onClick={() => void runCompile()} disabled={operation !== null}>
+          <button className="action-button border border-zinc-600 bg-zinc-100 text-zinc-950 hover:bg-white" onClick={() => void runCompile()} disabled={operation !== null || aiEdit !== null}>
             {operation === "compile" ? <LoaderCircle size={14} className="animate-spin" /> : <Play size={14} />}
             Compile
           </button>
           <button
             className="action-button upload-button"
             onClick={() => void runUpload()}
-            disabled={!compileSucceeded || !selectedBoard || operation !== null}
+            disabled={!compileSucceeded || !selectedBoard || operation !== null || aiEdit !== null}
             title={!compileSucceeded ? "Compile successfully before uploading" : "Upload to board"}
           >
             {operation === "upload" ? <LoaderCircle size={14} className="animate-spin" /> : <Upload size={14} />}
@@ -549,36 +556,81 @@ function App() {
                   <span className="mr-2 h-2 w-2 rounded-full bg-orange-500" />
                   <span className="text-zinc-300">{basename(filePath)}</span>
                   {dirty && <span className="ml-1 text-zinc-500">•</span>}
-                  <span className="ml-auto truncate text-[11px] text-zinc-600">{filePath ?? "Save the sketch before compiling"}</span>
+                  {aiEdit ? (
+                    <div className="ml-auto flex items-center gap-2">
+                      <span className="text-[10px] text-zinc-500">AI changes</span>
+                      <button
+                        className="rounded border border-zinc-700 px-2 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                        onClick={() => setAiEdit(null)}
+                      >
+                        Discard
+                      </button>
+                      <button
+                        className="rounded border border-emerald-800 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-300 hover:bg-emerald-500/20"
+                        onClick={() => {
+                          setCode(aiEdit.modified);
+                          setDirty(true);
+                          setCompileSucceeded(false);
+                          setAiEdit(null);
+                        }}
+                      >
+                        Apply changes
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="ml-auto truncate text-[11px] text-zinc-600">{filePath ?? "Save the sketch before compiling"}</span>
+                  )}
                 </div>
                 <div className="min-h-0 flex-1">
-                  <Editor
-                    height="100%"
-                    language="cpp"
-                    theme="trace-dark"
-                    value={code}
-                    beforeMount={configureMonaco}
-                    onChange={(value) => {
-                      setCode(value ?? "");
-                      setDirty(true);
-                      setCompileSucceeded(false);
-                    }}
-                    options={{
-                      automaticLayout: true,
-                      minimap: { enabled: false },
-                      fontSize: 13,
-                      lineHeight: 21,
-                      fontFamily: "JetBrains Mono, SFMono-Regular, Consolas, monospace",
-                      fontLigatures: true,
-                      padding: { top: 12, bottom: 12 },
-                      scrollBeyondLastLine: false,
-                      smoothScrolling: true,
-                      renderLineHighlight: "all",
-                      bracketPairColorization: { enabled: true },
-                      guides: { bracketPairs: true, indentation: false },
-                      tabSize: 2,
-                    }}
-                  />
+                  {aiEdit ? (
+                    <DiffEditor
+                      height="100%"
+                      language="cpp"
+                      theme="trace-dark"
+                      original={aiEdit.original}
+                      modified={aiEdit.modified}
+                      beforeMount={configureMonaco}
+                      options={{
+                        automaticLayout: true,
+                        readOnly: true,
+                        originalEditable: false,
+                        renderSideBySide: true,
+                        minimap: { enabled: false },
+                        fontSize: 13,
+                        lineHeight: 21,
+                        fontFamily: "JetBrains Mono, SFMono-Regular, Consolas, monospace",
+                        scrollBeyondLastLine: false,
+                      }}
+                    />
+                  ) : (
+                    <Editor
+                      height="100%"
+                      language="cpp"
+                      theme="trace-dark"
+                      value={code}
+                      beforeMount={configureMonaco}
+                      onChange={(value) => {
+                        setCode(value ?? "");
+                        setDirty(true);
+                        setCompileSucceeded(false);
+                      }}
+                      options={{
+                        automaticLayout: true,
+                        minimap: { enabled: false },
+                        fontSize: 13,
+                        lineHeight: 21,
+                        fontFamily: "JetBrains Mono, SFMono-Regular, Consolas, monospace",
+                        fontLigatures: true,
+                        padding: { top: 12, bottom: 12 },
+                        scrollBeyondLastLine: false,
+                        smoothScrolling: true,
+                        renderLineHighlight: "all",
+                        bracketPairColorization: { enabled: true },
+                        guides: { bracketPairs: true, indentation: false },
+                        tabSize: 2,
+                      }}
+                    />
+                  )}
                 </div>
               </section>
             </Panel>
@@ -628,13 +680,11 @@ function App() {
                 apiKey={apiKey}
                 model={settings.aiModels[settings.aiProvider] ?? settings.customProviderModel}
                 customUrl={settings.customProviderUrl}
-                currentCode={code}
+                currentCode={aiEdit?.modified ?? code}
                 explainPrompt={explainPrompt}
                 onExplainConsumed={() => setExplainPrompt(null)}
-                onReplaceCode={(replacement) => {
-                  setCode(replacement);
-                  setDirty(true);
-                  setCompileSucceeded(false);
+                onProposeCode={(replacement) => {
+                  setAiEdit({ original: aiEdit?.modified ?? code, modified: replacement });
                 }}
               />
             </Panel>

@@ -168,10 +168,6 @@
     @apply border-orange-900/40 bg-orange-500/5;
   }
 
-  .ai-apply-code {
-    @apply mt-1.5 inline-flex items-center gap-1.5 rounded border border-orange-900/60 bg-orange-500/5 px-2 py-1 text-[10px] text-orange-300 transition hover:bg-orange-500/10;
-  }
-
   .ai-spinner {
     width: 0.8125rem;
     height: 0.8125rem;
