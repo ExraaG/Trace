@@ -6,11 +6,13 @@ import type { AiMessage, AiProvider } from "../types";
 interface AiAssistantProps {
   provider: AiProvider;
   apiKey: string;
+  customUrl: string;
+  customModel: string;
   explainPrompt: string | null;
   onExplainConsumed: () => void;
 }
 
-export function AiAssistant({ provider, apiKey, explainPrompt, onExplainConsumed }: AiAssistantProps) {
+export function AiAssistant({ provider, apiKey, customUrl, customModel, explainPrompt, onExplainConsumed }: AiAssistantProps) {
   const [messages, setMessages] = useState<AiMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -36,7 +38,7 @@ export function AiAssistant({ provider, apiKey, explainPrompt, onExplainConsumed
     setError(null);
     setLoading(true);
     try {
-      const response = await askProvider(provider, apiKey, next);
+      const response = await askProvider(provider, apiKey, next, customUrl, customModel);
       setMessages((current) => [...current, { role: "assistant", content: response }]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -57,7 +59,7 @@ export function AiAssistant({ provider, apiKey, explainPrompt, onExplainConsumed
           <div className="ai-empty">
             <Sparkles size={18} />
             <p>Ask about ESP32, Arduino code, or a build error.</p>
-            <span>Requests go directly to {PROVIDERS[provider].label} using your key.</span>
+            <span>{provider === "custom" ? `Requests go directly to ${customUrl}.` : `Requests go directly to ${PROVIDERS[provider].label} using your key.`}</span>
           </div>
         )}
         {messages.map((message, index) => (

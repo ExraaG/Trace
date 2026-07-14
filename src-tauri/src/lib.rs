@@ -126,6 +126,40 @@ struct AnthropicContent {
     text: String,
 }
 
+#[derive(Deserialize)]
+struct GeminiResponse {
+    #[serde(default)]
+    steps: Vec<GeminiStep>,
+}
+
+#[derive(Deserialize)]
+struct GeminiStep {
+    #[serde(default)]
+    content: Vec<GeminiContent>,
+}
+
+#[derive(Deserialize)]
+struct GeminiContent {
+    #[serde(default)]
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct CompatibleChatResponse {
+    #[serde(default)]
+    choices: Vec<CompatibleChatChoice>,
+}
+
+#[derive(Deserialize)]
+struct CompatibleChatChoice {
+    message: CompatibleChatMessage,
+}
+
+#[derive(Deserialize)]
+struct CompatibleChatMessage {
+    content: String,
+}
+
 #[derive(Default)]
 struct ToolState {
     operation_lock: AsyncMutex<()>,
@@ -620,13 +654,127 @@ async fn ask_anthropic(
         .ok_or_else(|| "Anthropic returned no text response.".to_owned())
 }
 
+async fn ask_gemini(
+    client: &reqwest::Client,
+    api_key: &str,
+    messages: &[AiMessage],
+) -> Result<String, String> {
+    let transcript = messages
+        .iter()
+        .map(|message| {
+            let speaker = if message.role == "assistant" {
+                "Assistant"
+            } else {
+                "User"
+            };
+            format!("{speaker}: {}", message.content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let response = client
+        .post("https://generativelanguage.googleapis.com/v1beta/interactions")
+        .header("x-goog-api-key", api_key)
+        .json(&json!({
+            "model": "gemini-3.5-flash",
+            "system_instruction": AI_SYSTEM_PROMPT,
+            "input": transcript,
+            "generation_config": { "thinking_level": "low" },
+            "store": false
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach Google Gemini: {error}"))?;
+    if !response.status().is_success() {
+        return Err(provider_error(response, "Google Gemini").await);
+    }
+    let value = response
+        .json::<GeminiResponse>()
+        .await
+        .map_err(|error| format!("Google Gemini returned an unreadable response: {error}"))?;
+    let text = value
+        .steps
+        .into_iter()
+        .rev()
+        .find_map(|step| {
+            let text = step
+                .content
+                .into_iter()
+                .map(|content| content.text)
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(text)
+        })
+        .unwrap_or_default();
+    (!text.trim().is_empty())
+        .then_some(text)
+        .ok_or_else(|| "Google Gemini returned no text response.".to_owned())
+}
+
+async fn ask_custom(
+    client: &reqwest::Client,
+    api_key: &str,
+    messages: &[AiMessage],
+    endpoint: &str,
+    model: &str,
+) -> Result<String, String> {
+    let url = reqwest::Url::parse(endpoint)
+        .map_err(|error| format!("The custom provider URL is invalid: {error}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("The custom provider URL must use http:// or https://.".to_owned());
+    }
+    if model.trim().is_empty() {
+        return Err("Add a model name for the custom provider.".to_owned());
+    }
+    let mut compatible_messages = vec![json!({
+        "role": "system",
+        "content": AI_SYSTEM_PROMPT
+    })];
+    compatible_messages.extend(
+        messages
+            .iter()
+            .map(|message| json!({ "role": message.role, "content": message.content })),
+    );
+    let mut request = client.post(url).json(&json!({
+        "model": model,
+        "messages": compatible_messages,
+        "max_tokens": 2048,
+        "stream": false
+    }));
+    if !api_key.trim().is_empty() {
+        request = request.bearer_auth(api_key.trim());
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach the custom provider: {error}"))?;
+    if !response.status().is_success() {
+        return Err(provider_error(response, "Custom provider").await);
+    }
+    let value = response
+        .json::<CompatibleChatResponse>()
+        .await
+        .map_err(|error| format!("The custom provider returned an unreadable response: {error}"))?;
+    let text = value
+        .choices
+        .into_iter()
+        .next()
+        .map(|choice| choice.message.content)
+        .unwrap_or_default();
+    (!text.trim().is_empty())
+        .then_some(text)
+        .ok_or_else(|| "The custom provider returned no text response.".to_owned())
+}
+
 #[tauri::command]
 async fn ask_ai(
     provider: String,
     api_key: String,
     messages: Vec<AiMessage>,
+    custom_url: Option<String>,
+    custom_model: Option<String>,
 ) -> Result<String, String> {
-    if api_key.trim().is_empty() {
+    if provider != "custom" && api_key.trim().is_empty() {
         return Err("Add an API key in Trace settings first.".to_owned());
     }
     if messages.is_empty() {
@@ -654,6 +802,17 @@ async fn ask_ai(
     match provider.as_str() {
         "openai" => ask_openai(&client, api_key.trim(), &messages).await,
         "anthropic" => ask_anthropic(&client, api_key.trim(), &messages).await,
+        "gemini" => ask_gemini(&client, api_key.trim(), &messages).await,
+        "custom" => {
+            ask_custom(
+                &client,
+                api_key.trim(),
+                &messages,
+                custom_url.as_deref().unwrap_or_default(),
+                custom_model.as_deref().unwrap_or_default(),
+            )
+            .await
+        }
         _ => Err("Unsupported AI provider.".to_owned()),
     }
 }

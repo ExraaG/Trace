@@ -6,7 +6,7 @@ import type { AiProvider, AppSettings } from "../types";
 interface AiSettingsModalProps {
   firstLaunch: boolean;
   settings: AppSettings;
-  onEnable: (provider: AiProvider, apiKey: string) => void;
+  onEnable: (provider: AiProvider, apiKey: string, customUrl: string, customModel: string) => void;
   onDisable: () => void;
   onClose: () => void;
 }
@@ -15,7 +15,11 @@ export function AiSettingsModal({ firstLaunch, settings, onEnable, onDisable, on
   const [enabled, setEnabled] = useState(firstLaunch || settings.aiEnabled);
   const [provider, setProvider] = useState<AiProvider | "">(firstLaunch ? "" : settings.aiProvider);
   const [apiKey, setApiKey] = useState(settings.apiKeys[settings.aiProvider] ?? "");
+  const [customUrl, setCustomUrl] = useState(settings.customProviderUrl);
+  const [customModel, setCustomModel] = useState(settings.customProviderModel);
   const selectedProvider = provider ? PROVIDERS[provider] : null;
+  const keyMissing = Boolean(selectedProvider?.keyRequired && !apiKey.trim());
+  const customMissing = provider === "custom" && (!customUrl.trim() || !customModel.trim());
 
   useEffect(() => {
     setApiKey(provider ? settings.apiKeys[provider] ?? "" : "");
@@ -41,7 +45,7 @@ export function AiSettingsModal({ firstLaunch, settings, onEnable, onDisable, on
           {firstLaunch ? "Would you like to enable an AI assistant?" : "AI assistant settings"}
         </h2>
         <p className="mt-2 text-sm leading-6 text-zinc-400">
-          This is completely optional and uses your own API key. Trace sends chat content only to the provider you choose—never to a Trace server—and makes no AI requests while disabled.
+          This is completely optional and uses credentials you provide when required. Trace sends chat content only to the destination you choose—never to a Trace server—and makes no AI requests while disabled.
         </p>
 
         {!firstLaunch && (
@@ -65,8 +69,34 @@ export function AiSettingsModal({ firstLaunch, settings, onEnable, onDisable, on
               {Object.values(PROVIDERS).map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
             </select>
           </label>
+          {provider === "custom" && (
+            <>
+              <label className="settings-field">
+                <span>OpenAI-compatible endpoint URL</span>
+                <input
+                  type="url"
+                  value={customUrl}
+                  onChange={(event) => setCustomUrl(event.target.value)}
+                  placeholder="http://localhost:11434/v1/chat/completions"
+                  spellCheck={false}
+                />
+              </label>
+              <label className="settings-field">
+                <span>Model</span>
+                <input
+                  value={customModel}
+                  onChange={(event) => setCustomModel(event.target.value)}
+                  placeholder="local-model"
+                  spellCheck={false}
+                />
+              </label>
+              <p className="-mt-2 text-[11px] leading-5 text-amber-300/70">
+                Chat content and the optional bearer token are sent directly to this URL.
+              </p>
+            </>
+          )}
           <label className="settings-field">
-            <span className="flex items-center gap-1.5"><KeyRound size={12} /> API key</span>
+            <span className="flex items-center gap-1.5"><KeyRound size={12} /> API key{provider === "custom" ? " (optional)" : ""}</span>
             <input
               type="password"
               value={apiKey}
@@ -77,7 +107,7 @@ export function AiSettingsModal({ firstLaunch, settings, onEnable, onDisable, on
               spellCheck={false}
             />
           </label>
-          {selectedProvider && (
+          {selectedProvider?.keyUrl && (
             <a
               className="inline-flex w-fit items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300"
               href={selectedProvider.keyUrl}
@@ -93,9 +123,9 @@ export function AiSettingsModal({ firstLaunch, settings, onEnable, onDisable, on
           <button className="toolbar-button" onClick={firstLaunch ? decline : onClose}>{firstLaunch ? "Not now" : "Cancel"}</button>
           <button
             className={`action-button ${enabled ? "bg-orange-500 text-zinc-950 hover:bg-orange-400" : "bg-zinc-700 text-zinc-200 hover:bg-zinc-600"}`}
-            disabled={enabled && (!provider || !apiKey.trim())}
+            disabled={enabled && (!provider || keyMissing || customMissing)}
             onClick={() => {
-              if (enabled && provider) onEnable(provider, apiKey.trim());
+              if (enabled && provider) onEnable(provider, apiKey.trim(), customUrl.trim(), customModel.trim());
               else onDisable();
               onClose();
             }}
@@ -104,7 +134,7 @@ export function AiSettingsModal({ firstLaunch, settings, onEnable, onDisable, on
           </button>
         </div>
         <p className="mt-4 text-[11px] leading-5 text-zinc-600">
-          The key is stored locally in Trace’s app-data settings file. It is never written to build logs or serial output.
+          Credentials and custom endpoint details are stored locally in Trace’s app-data settings file. They are never written to build logs or serial output.
         </p>
       </section>
     </div>

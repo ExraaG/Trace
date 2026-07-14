@@ -41,7 +41,7 @@ export interface LogEntry {
   text: string;
 }
 
-export type AiProvider = "anthropic" | "openai";
+export type AiProvider = "anthropic" | "openai" | "gemini" | "custom";
 
 export interface AiMessage {
   role: "user" | "assistant";
@@ -64,6 +64,8 @@ export interface AppSettings {
   aiEnabled: boolean;
   aiProvider: AiProvider;
   apiKeys: Partial<Record<AiProvider, string>>;
+  customProviderUrl: string;
+  customProviderModel: string;
   serialTimestamps: boolean;
   layout: PanelLayout;
 }

@@ -35,6 +35,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiEnabled: false,
   aiProvider: "anthropic",
   apiKeys: {},
+  customProviderUrl: "http://localhost:11434/v1/chat/completions",
+  customProviderModel: "local-model",
   serialTimestamps: false,
   layout: PRESET_LAYOUTS.debug,
 };

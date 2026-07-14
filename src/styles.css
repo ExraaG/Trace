@@ -215,6 +215,42 @@
   }
 
   .settings-toggle input {
-    @apply h-4 w-4 accent-orange-500;
+    position: relative;
+    width: 2.25rem;
+    height: 1.25rem;
+    flex: none;
+    cursor: pointer;
+    appearance: none;
+    border: 1px solid #52525b;
+    border-radius: 9999px;
+    background: #27272a;
+    transition: border-color 150ms ease, background-color 150ms ease;
+  }
+
+  .settings-toggle input::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 0.875rem;
+    height: 0.875rem;
+    border-radius: 9999px;
+    background: #a1a1aa;
+    transition: transform 150ms ease, background-color 150ms ease;
+  }
+
+  .settings-toggle input:checked {
+    border-color: #ea580c;
+    background: #f97316;
+  }
+
+  .settings-toggle input:checked::after {
+    transform: translateX(1rem);
+    background: #18181b;
+  }
+
+  .settings-toggle input:focus-visible {
+    outline: 2px solid #fb923c;
+    outline-offset: 2px;
   }
 }

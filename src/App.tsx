@@ -390,13 +390,15 @@ function App() {
     }
   };
 
-  const enableAi = (provider: AiProvider, apiKey: string) => {
+  const enableAi = (provider: AiProvider, apiKey: string, customUrl: string, customModel: string) => {
     updateSettings((current) => ({
       ...current,
       onboardingComplete: true,
       aiEnabled: true,
       aiProvider: provider,
       apiKeys: { ...current.apiKeys, [provider]: apiKey },
+      customProviderUrl: customUrl,
+      customProviderModel: customModel,
       layout: {
         ...current.layout,
         preset: "custom",
@@ -606,7 +608,14 @@ function App() {
           <>
             <Separator className="resize-handle vertical" />
             <Panel id="ai" minSize="280px" collapsible collapsedSize={0}>
-              <AiAssistant provider={settings.aiProvider} apiKey={apiKey} explainPrompt={explainPrompt} onExplainConsumed={() => setExplainPrompt(null)} />
+              <AiAssistant
+                provider={settings.aiProvider}
+                apiKey={apiKey}
+                customUrl={settings.customProviderUrl}
+                customModel={settings.customProviderModel}
+                explainPrompt={explainPrompt}
+                onExplainConsumed={() => setExplainPrompt(null)}
+              />
             </Panel>
           </>
         )}

@@ -104,7 +104,7 @@ Drag any divider to resize the editor, build output, serial console, or enabled 
 
 ## AI Assistant (optional)
 
-The first-launch prompt can enable a basic ESP32/Arduino assistant using your own Anthropic or OpenAI API key. It is opt-in: when disabled, the panel is hidden and Trace makes no provider requests. Keys are stored locally in Trace's app-data settings file, are never added to logs, and requests go directly from the Rust backend to the selected provider. Open **Settings** to enable, disable, or change the provider later. **Explain error** copies the current build output into the chat input for review before sending.
+The first-launch prompt can enable a basic ESP32/Arduino assistant using your own Anthropic, OpenAI, or Google Gemini API key. An OpenAI-compatible custom endpoint is also supported for local models and third-party services, with a configurable URL, model name, and optional bearer token. AI is opt-in: when disabled, the panel is hidden and Trace makes no provider requests. Credentials and custom endpoint details are stored locally in Trace's app-data settings file, are never added to logs, and requests go directly from the Rust backend to the selected destination. Open **Settings** to enable, disable, or change the provider later. **Explain error** copies the current build output into the chat input for review before sending.
 
 ## Serial Console
 
