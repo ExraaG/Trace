@@ -447,6 +447,20 @@ function App() {
 
   const apiKey = settings.apiKeys[settings.aiProvider] ?? "";
 
+  if (!settingsReady) {
+    return (
+      <main className="grid h-screen place-items-center bg-canvas text-zinc-400">
+        <div className="flex items-center gap-3 text-sm">
+          <span className="grid h-8 w-8 place-items-center rounded-lg bg-orange-500/15 text-orange-400">
+            <Code2 size={17} />
+          </span>
+          <span>Loading Trace…</span>
+          <LoaderCircle size={14} className="animate-spin" />
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="flex h-screen min-h-[520px] flex-col overflow-hidden bg-canvas text-zinc-200">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line bg-panel px-3">
@@ -630,7 +644,7 @@ function App() {
         <span className="ml-auto">ESP32 · Arduino</span>
       </footer>
 
-      {settingsReady && (!settings.onboardingComplete || settingsOpen) && (
+      {(!settings.onboardingComplete || settingsOpen) && (
         <AiSettingsModal
           firstLaunch={!settings.onboardingComplete}
           settings={settings}

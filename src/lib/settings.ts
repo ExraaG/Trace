@@ -1,5 +1,5 @@
 import { load, type Store } from "@tauri-apps/plugin-store";
-import type { AppSettings, LayoutPreset, PanelLayout } from "../types";
+import type { AiProvider, AppSettings, LayoutPreset, PanelLayout } from "../types";
 
 const SETTINGS_KEY = "settings";
 
@@ -48,18 +48,48 @@ function settingsStore() {
   return storePromise;
 }
 
+const PROVIDER_IDS: AiProvider[] = ["anthropic", "openai", "gemini", "custom"];
+const PRESET_IDS: LayoutPreset[] = ["focus", "debug", "full", "custom"];
+
+function cleanLayout(
+  value: Record<string, number> | undefined,
+  fallback: Record<string, number>,
+  ids: string[],
+) {
+  if (!value) return { ...fallback };
+  const entries = ids.map((id) => [id, Number(value[id])] as const);
+  if (entries.some(([, size]) => !Number.isFinite(size) || size < 0) || entries.every(([, size]) => size === 0)) {
+    return { ...fallback };
+  }
+  return Object.fromEntries(entries);
+}
+
 function mergeSettings(value: Partial<AppSettings> | null | undefined): AppSettings {
   if (!value) return structuredClone(DEFAULT_SETTINGS);
+  const layout = value.layout;
+  const provider = PROVIDER_IDS.includes(value.aiProvider as AiProvider)
+    ? value.aiProvider as AiProvider
+    : DEFAULT_SETTINGS.aiProvider;
+  const apiKeys = Object.fromEntries(
+    Object.entries(value.apiKeys ?? {}).filter(
+      ([id, key]) => PROVIDER_IDS.includes(id as AiProvider) && typeof key === "string",
+    ),
+  ) as AppSettings["apiKeys"];
   return {
-    ...DEFAULT_SETTINGS,
-    ...value,
-    apiKeys: { ...DEFAULT_SETTINGS.apiKeys, ...value.apiKeys },
+    onboardingComplete: typeof value.onboardingComplete === "boolean" ? value.onboardingComplete : false,
+    aiEnabled: typeof value.aiEnabled === "boolean" ? value.aiEnabled : false,
+    aiProvider: provider,
+    apiKeys,
+    customProviderUrl: typeof value.customProviderUrl === "string" ? value.customProviderUrl : DEFAULT_SETTINGS.customProviderUrl,
+    customProviderModel: typeof value.customProviderModel === "string" ? value.customProviderModel : DEFAULT_SETTINGS.customProviderModel,
+    serialTimestamps: typeof value.serialTimestamps === "boolean" ? value.serialTimestamps : false,
     layout: {
-      ...DEFAULT_SETTINGS.layout,
-      ...value.layout,
-      outer: { ...DEFAULT_SETTINGS.layout.outer, ...value.layout?.outer },
-      vertical: { ...DEFAULT_SETTINGS.layout.vertical, ...value.layout?.vertical },
-      bottom: { ...DEFAULT_SETTINGS.layout.bottom, ...value.layout?.bottom },
+      preset: PRESET_IDS.includes(layout?.preset as LayoutPreset) ? layout!.preset : DEFAULT_SETTINGS.layout.preset,
+      outer: cleanLayout(layout?.outer, DEFAULT_SETTINGS.layout.outer, ["workspace", "ai"]),
+      vertical: cleanLayout(layout?.vertical, DEFAULT_SETTINGS.layout.vertical, ["editor", "lower"]),
+      bottom: cleanLayout(layout?.bottom, DEFAULT_SETTINGS.layout.bottom, ["build", "console"]),
+      consoleVisible: typeof layout?.consoleVisible === "boolean" ? layout.consoleVisible : DEFAULT_SETTINGS.layout.consoleVisible,
+      aiVisible: typeof layout?.aiVisible === "boolean" ? layout.aiVisible : DEFAULT_SETTINGS.layout.aiVisible,
     },
   };
 }
