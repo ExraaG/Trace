@@ -124,6 +124,7 @@ struct SerialSession {
 #[derive(Default)]
 struct SerialState {
     session: Mutex<Option<SerialSession>>,
+    blocked_for_upload: AtomicBool,
 }
 
 #[derive(Deserialize)]
@@ -324,12 +325,14 @@ async fn run_tool(
 
     if !status.success() {
         let lower = format!("{stdout_text}\n{stderr_text}").to_ascii_lowercase();
-        if lower.contains("resource busy")
-            || lower.contains("access is denied")
-            || lower.contains("permission denied")
-            || lower.contains("device or resource busy")
-        {
-            let hint = "The serial port is busy. Close other serial monitors or applications using the port, then try again.";
+        let hint = if lower.contains("access is denied") || lower.contains("permission denied") {
+            Some("Serial port permission denied. On Linux, add your user to the port's dialout or uucp group, then sign out and back in.")
+        } else if lower.contains("resource busy") || lower.contains("device or resource busy") {
+            Some("The serial port is busy. Close other serial monitors or applications using the port, then try again.")
+        } else {
+            None
+        };
+        if let Some(hint) = hint {
             let _ = app.emit(
                 "tool-output",
                 ToolOutput {
@@ -403,21 +406,33 @@ async fn upload_sketch(
     port: String,
     fqbn: String,
 ) -> Result<OperationResult, String> {
-    stop_serial_session(&serial_state, "upload", Some(&app))?;
-    run_tool(
-        app,
-        tool_state,
-        "upload",
-        vec![
-            "upload".into(),
-            "-p".into(),
-            port,
-            "--fqbn".into(),
-            fqbn,
-            sketch_path,
-        ],
-    )
-    .await
+    if serial_state.blocked_for_upload.swap(true, Ordering::SeqCst) {
+        return Err("An upload is already using the serial port.".to_owned());
+    }
+
+    let result = match stop_serial_session(&serial_state, "upload", Some(&app)) {
+        Ok(_) => {
+            run_tool(
+                app,
+                tool_state,
+                "upload",
+                vec![
+                    "upload".into(),
+                    "-p".into(),
+                    port,
+                    "--fqbn".into(),
+                    fqbn,
+                    sketch_path,
+                ],
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    serial_state
+        .blocked_for_upload
+        .store(false, Ordering::SeqCst);
+    result
 }
 
 fn serial_reader(
@@ -471,6 +486,9 @@ fn open_serial(
     port: String,
     baud_rate: u32,
 ) -> Result<(), String> {
+    if state.blocked_for_upload.load(Ordering::SeqCst) {
+        return Err("The serial monitor is unavailable while an upload is running.".to_owned());
+    }
     stop_serial_session(&state, "replaced", Some(&app))?;
     let handle = serialport::new(&port, baud_rate)
         .timeout(Duration::from_millis(100))
