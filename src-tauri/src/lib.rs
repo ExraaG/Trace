@@ -478,6 +478,31 @@ fn search_library_names(value: &Value) -> Vec<String> {
         .collect()
 }
 
+fn library_name_key(value: &str) -> String {
+    let mut key: String = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase())
+        .collect();
+    if let Some(without_suffix) = key.strip_suffix("library") {
+        key = without_suffix.to_owned();
+    }
+    key
+}
+
+fn exact_library_name(header: &str, candidates: &[String]) -> Option<String> {
+    let stem = Path::new(header)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(header);
+    let expected = library_name_key(stem);
+    let mut matches = candidates
+        .iter()
+        .filter(|candidate| library_name_key(candidate) == expected);
+    let matched = matches.next()?.clone();
+    matches.next().is_none().then_some(matched)
+}
+
 async fn run_arduino_cli_json(args: &[String]) -> Result<Value, String> {
     let command = arduino_cli_path();
     let mut process = Command::new(&command);
@@ -501,44 +526,59 @@ async fn run_arduino_cli_json(args: &[String]) -> Result<Value, String> {
 async fn resolve_library_package(header: &str) -> Result<Option<String>, String> {
     let compact = "--omit-releases-details".to_owned();
     let json_flag = "--json".to_owned();
-    let by_header = run_arduino_cli_json(&[
-        "lib".to_owned(),
-        "search".to_owned(),
-        format!("provides={header}"),
-        compact.clone(),
-        json_flag.clone(),
-    ])
-    .await?;
-    let header_matches = search_library_names(&by_header);
-    if header_matches.len() == 1 {
-        return Ok(header_matches.into_iter().next());
-    }
-    if header_matches.len() > 1 {
-        return Err(format!(
-            "Multiple Arduino libraries provide {header}; install the intended package manually."
-        ));
-    }
-
     let stem = Path::new(header)
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or(header);
+
     let by_name = run_arduino_cli_json(&[
         "lib".to_owned(),
         "search".to_owned(),
         format!("name={stem}"),
+        compact.clone(),
+        json_flag.clone(),
+    ])
+    .await?;
+    let name_matches = search_library_names(&by_name);
+    if let Some(package) = exact_library_name(header, &name_matches) {
+        return Ok(Some(package));
+    }
+
+    // The Library Manager index does not consistently populate `provides_includes`.
+    // A normal search plus normalized exact match handles headers such as
+    // Adafruit_SSD1306.h whose package is named "Adafruit SSD1306".
+    let broad = run_arduino_cli_json(&[
+        "lib".to_owned(),
+        "search".to_owned(),
+        stem.to_owned(),
+        compact.clone(),
+        json_flag.clone(),
+    ])
+    .await?;
+    let broad_matches = search_library_names(&broad);
+    if let Some(package) = exact_library_name(header, &broad_matches) {
+        return Ok(Some(package));
+    }
+
+    let by_header = run_arduino_cli_json(&[
+        "lib".to_owned(),
+        "search".to_owned(),
+        format!("provides={header}"),
         compact,
         json_flag,
     ])
     .await?;
-    let name_matches = search_library_names(&by_name);
-    if name_matches.len() == 1 {
-        Ok(name_matches.into_iter().next())
-    } else if name_matches.is_empty() {
+    let header_matches = search_library_names(&by_header);
+    if let Some(package) = exact_library_name(header, &header_matches) {
+        return Ok(Some(package));
+    }
+    if header_matches.len() == 1 {
+        Ok(header_matches.into_iter().next())
+    } else if header_matches.is_empty() {
         Ok(None)
     } else {
         Err(format!(
-            "Multiple Arduino libraries match {header}; install the intended package manually."
+            "Multiple Arduino libraries provide {header}; install the intended package manually."
         ))
     }
 }
@@ -618,10 +658,21 @@ async fn process_library_queue(app: AppHandle, fqbn: String, headers: Vec<String
     let mut missing_headers = Vec::new();
     for header in headers {
         let lower_header = header.to_ascii_lowercase();
-        if is_core_or_system_header(&header) || installed_headers.contains(&lower_header) {
+        if is_core_or_system_header(&header) {
             if let Ok(mut statuses) = app.state::<LibraryState>().statuses.lock() {
                 statuses.insert(header, "available".to_owned());
             }
+            continue;
+        }
+        if installed_headers.contains(&lower_header) {
+            emit_library_status(
+                &app,
+                &header,
+                "",
+                "installed",
+                100,
+                "Library is already installed.",
+            );
             continue;
         }
         emit_library_status(
@@ -1611,6 +1662,23 @@ mod tests {
         });
         assert_eq!(search_library_names(&value), vec!["Stepper"]);
         assert!(search_library_names(&json!({ "status": "success" })).is_empty());
+    }
+
+    #[test]
+    fn matches_underscored_headers_to_spaced_package_names() {
+        let candidates = vec![
+            "Adafruit SSD1306".to_owned(),
+            "Adafruit SSD1306 EMULATOR".to_owned(),
+            "Adafruit_SSD1306_72x40".to_owned(),
+        ];
+        assert_eq!(
+            exact_library_name("Adafruit_SSD1306.h", &candidates),
+            Some("Adafruit SSD1306".to_owned())
+        );
+        assert_eq!(
+            exact_library_name("Adafruit_GFX.h", &["Adafruit GFX Library".to_owned()]),
+            Some("Adafruit GFX Library".to_owned())
+        );
     }
 
     #[test]
