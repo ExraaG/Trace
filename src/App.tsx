@@ -544,6 +544,10 @@ function App() {
   const apiKey = settings.apiKeys[settings.aiProvider] ?? "";
   const finishStartup = useCallback(() => setShowStartup(false), []);
 
+  if (showStartup) {
+    return <StartupSplash onComplete={finishStartup} />;
+  }
+
   if (!settingsReady) {
     return (
       <main className="grid h-screen place-items-center bg-canvas text-zinc-400">
@@ -801,8 +805,6 @@ function App() {
           onClose={() => setSettingsOpen(false)}
         />
       )}
-
-      {showStartup && <StartupSplash onComplete={finishStartup} />}
     </main>
   );
 }
