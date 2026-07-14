@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tokio::{io::AsyncBufReadExt, process::Command, sync::Mutex as AsyncMutex};
 
 const DEFAULT_ESP32_FQBN: &str = "esp32:esp32:esp32";
+const STAGED_SKETCH_NAME: &str = "TraceSketch";
 const AI_SYSTEM_PROMPT: &str = "You are the optional Trace IDE assistant. Help with ESP32, Arduino, C++, build errors, uploads, and embedded debugging. Be concise, practical, and explicit when uncertain. Prefer the smallest safe fix. You only know code or logs the user deliberately includes in chat. When a request includes <trace-current-code> and asks you to write or change the open sketch, return the complete replacement sketch inside exactly one <trace-code>...</trace-code> block. Never put partial code in that block.";
 
 fn arduino_cli_binary_name() -> &'static str {
@@ -54,6 +55,38 @@ fn arduino_cli_path() -> PathBuf {
     }
 
     PathBuf::from(arduino_cli_binary_name())
+}
+
+fn stage_sketch_for_arduino_cli(sketch_path: &str) -> Result<String, String> {
+    let source = Path::new(sketch_path);
+    if !source.is_file() {
+        return Err(format!("Sketch file does not exist: {}", source.display()));
+    }
+
+    let sketch_code = fs::read_to_string(source)
+        .map_err(|error| format!("Could not read sketch {}: {error}", source.display()))?;
+    stage_sketch_source(&sketch_code)
+}
+
+fn stage_sketch_source(sketch_code: &str) -> Result<String, String> {
+    let sketch_dir = env::temp_dir()
+        .join("trace-arduino")
+        .join(STAGED_SKETCH_NAME);
+    fs::create_dir_all(&sketch_dir).map_err(|error| {
+        format!(
+            "Could not create Arduino build directory {}: {error}",
+            sketch_dir.display()
+        )
+    })?;
+    let staged_file = sketch_dir.join(format!("{STAGED_SKETCH_NAME}.ino"));
+    fs::write(&staged_file, sketch_code).map_err(|error| {
+        format!(
+            "Could not write temporary Arduino sketch {}: {error}",
+            staged_file.display(),
+        )
+    })?;
+
+    Ok(sketch_dir.to_string_lossy().into_owned())
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -354,14 +387,15 @@ async fn run_tool(
 async fn compile_sketch(
     app: AppHandle,
     state: State<'_, ToolState>,
-    sketch_path: String,
+    sketch_code: String,
     fqbn: String,
 ) -> Result<OperationResult, String> {
+    let staged_sketch = stage_sketch_source(&sketch_code)?;
     run_tool(
         app,
         state,
         "compile",
-        vec!["compile".into(), "--fqbn".into(), fqbn, sketch_path],
+        vec!["compile".into(), "--fqbn".into(), fqbn, staged_sketch],
     )
     .await
 }
@@ -406,6 +440,7 @@ async fn upload_sketch(
     port: String,
     fqbn: String,
 ) -> Result<OperationResult, String> {
+    let staged_sketch = stage_sketch_for_arduino_cli(&sketch_path)?;
     if serial_state.blocked_for_upload.swap(true, Ordering::SeqCst) {
         return Err("An upload is already using the serial port.".to_owned());
     }
@@ -422,7 +457,7 @@ async fn upload_sketch(
                     port,
                     "--fqbn".into(),
                     fqbn,
-                    sketch_path,
+                    staged_sketch,
                 ],
             )
             .await
@@ -1177,6 +1212,23 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stages_any_ino_filename_as_a_valid_arduino_sketch() {
+        let source = env::temp_dir().join(format!("trace-untitled-{}.ino", std::process::id()));
+        fs::write(&source, "void setup() {}\nvoid loop() {}\n").unwrap();
+
+        let staged_dir =
+            PathBuf::from(stage_sketch_for_arduino_cli(source.to_str().unwrap()).unwrap());
+        let staged_file = staged_dir.join(format!("{STAGED_SKETCH_NAME}.ino"));
+
+        assert_eq!(staged_dir.file_name().unwrap(), STAGED_SKETCH_NAME);
+        assert_eq!(
+            fs::read_to_string(staged_file).unwrap(),
+            "void setup() {}\nvoid loop() {}\n"
+        );
+        let _ = fs::remove_file(source);
+    }
 
     #[test]
     fn parses_detected_esp32_board() {

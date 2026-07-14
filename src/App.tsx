@@ -304,14 +304,12 @@ function App() {
       appendLog("Select a connected board before compiling.", "system", "stderr");
       return;
     }
-    const path = await persistSketch();
-    if (!path) return;
     setOperation("compile");
     setCompileSucceeded(false);
-    appendLog(`Compiling ${basename(path)} for ${selectedBoard.name}…`, "compile");
+    appendLog(`Compiling ${filePath ? basename(filePath) : "Untitled.ino"} for ${selectedBoard.name}…`, "compile");
     try {
       const result = await invoke<OperationResult>("compile_sketch", {
-        sketchPath: path,
+        sketchCode: code,
         fqbn: selectedBoard.fqbn,
       });
       setCompileSucceeded(result.success);
@@ -578,7 +576,7 @@ function App() {
                       </button>
                     </div>
                   ) : (
-                    <span className="ml-auto truncate text-[11px] text-zinc-600">{filePath ?? "Save the sketch before compiling"}</span>
+                    <span className="ml-auto truncate text-[11px] text-zinc-600">{filePath ?? "Untitled sketch · compiles without saving"}</span>
                   )}
                 </div>
                 <div className="min-h-0 flex-1">
