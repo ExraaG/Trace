@@ -1,7 +1,8 @@
 import Editor, { DiffEditor, type Monaco } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import {
   Bot,
   Check,
@@ -31,6 +32,7 @@ import { AiAssistant } from "./components/AiAssistant";
 import { AiSettingsModal } from "./components/AiSettingsModal";
 import { BuildOutput } from "./components/BuildOutput";
 import { SerialConsole } from "./components/SerialConsole";
+import { StartupSplash } from "./components/StartupSplash";
 import { DEFAULT_SETTINGS, PRESET_LAYOUTS, readSettings, writeSettings } from "./lib/settings";
 import type {
   AiProvider,
@@ -62,6 +64,11 @@ void loop() {
 interface AiEditProposal {
   original: string;
   modified: string;
+}
+
+interface AiToolResult {
+  success: boolean;
+  message: string;
 }
 
 function errorMessage(error: unknown): string {
@@ -100,11 +107,15 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showStartup, setShowStartup] = useState(true);
   const [explainPrompt, setExplainPrompt] = useState<string | null>(null);
   const [aiEdit, setAiEdit] = useState<AiEditProposal | null>(null);
   const logId = useRef(0);
   const serialId = useRef(0);
   const serialStartedAt = useRef(Date.now());
+  const compileSucceededRef = useRef(compileSucceeded);
+  const dirtyRef = useRef(dirty);
+  const closeApprovedRef = useRef(false);
   const outerGroup = useGroupRef();
   const verticalGroup = useGroupRef();
   const bottomGroup = useGroupRef();
@@ -113,6 +124,43 @@ function App() {
     () => boards.find((board) => board.port === selectedPort) ?? null,
     [boards, selectedPort],
   );
+
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+
+  useEffect(() => {
+    compileSucceededRef.current = compileSucceeded;
+  }, [compileSucceeded]);
+
+  useEffect(() => {
+    let disposed = false;
+    let stopListening: (() => void) | undefined;
+    void getCurrentWindow().onCloseRequested(async (event) => {
+      if (closeApprovedRef.current || !dirtyRef.current) return;
+      event.preventDefault();
+      const shouldClose = await confirm(
+        "Your sketch has unsaved changes. Close Trace and discard them?",
+        {
+          title: "Unsaved changes",
+          kind: "warning",
+          okLabel: "Discard and close",
+          cancelLabel: "Keep editing",
+        },
+      );
+      if (shouldClose) {
+        closeApprovedRef.current = true;
+        await getCurrentWindow().close();
+      }
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else stopListening = unlisten;
+    });
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
+  }, []);
 
   const appendLog = useCallback(
     (text: string, source: LogEntry["source"] = "system", stream: LogEntry["stream"] = "system") => {
@@ -289,23 +337,17 @@ function App() {
     }
   };
 
-  const persistSketch = async () => {
-    if (!filePath) return saveAsSketch();
-    try {
-      return await saveTo(filePath);
-    } catch (error) {
-      appendLog(`Save failed: ${errorMessage(error)}`, "system", "stderr");
-      return null;
+  const runCompile = async (): Promise<AiToolResult> => {
+    if (operation !== null) {
+      return { success: false, message: "Compile could not start because another operation is running." };
     }
-  };
-
-  const runCompile = async () => {
     if (!selectedBoard) {
       appendLog("Select a connected board before compiling.", "system", "stderr");
-      return;
+      return { success: false, message: "Compile could not start because no board is selected." };
     }
     setOperation("compile");
     setCompileSucceeded(false);
+    compileSucceededRef.current = false;
     appendLog(`Compiling ${filePath ? basename(filePath) : "Untitled.ino"} for ${selectedBoard.name}…`, "compile");
     try {
       const result = await invoke<OperationResult>("compile_sketch", {
@@ -313,13 +355,22 @@ function App() {
         fqbn: selectedBoard.fqbn,
       });
       setCompileSucceeded(result.success);
+      compileSucceededRef.current = result.success;
       appendLog(
         result.success ? "Compile finished successfully." : `Compile failed (exit ${result.exitCode ?? "unknown"}).`,
         "compile",
         result.success ? "system" : "stderr",
       );
+      return {
+        success: result.success,
+        message: result.success
+          ? `Compile succeeded for ${selectedBoard.name}.`
+          : `Compile failed with exit code ${result.exitCode ?? "unknown"}. Check Build output for details.`,
+      };
     } catch (error) {
-      appendLog(`Compile failed: ${errorMessage(error)}`, "compile", "stderr");
+      const message = errorMessage(error);
+      appendLog(`Compile failed: ${message}`, "compile", "stderr");
+      return { success: false, message: `Compile failed: ${message}` };
     } finally {
       setOperation(null);
     }
@@ -354,10 +405,16 @@ function App() {
     }
   }, [appendSerial]);
 
-  const runUpload = async () => {
-    if (!selectedBoard || !filePath || !compileSucceeded) return;
-    const path = await persistSketch();
-    if (!path) return;
+  const runUpload = async (): Promise<AiToolResult> => {
+    if (operation !== null) {
+      return { success: false, message: "Upload could not start because another operation is running." };
+    }
+    if (!selectedBoard) {
+      return { success: false, message: "Upload could not start because no board is selected." };
+    }
+    if (!compileSucceededRef.current) {
+      return { success: false, message: "Upload is disabled until the current editor buffer compiles successfully." };
+    }
     const wasOpen = serialOpen;
     setOperation("upload");
     setReopenAfterUpload(false);
@@ -365,10 +422,10 @@ function App() {
       appendSerial("Disconnected for upload…");
       await closeSerial("upload");
     }
-    appendLog(`Uploading ${basename(path)} to ${selectedBoard.port}…`, "upload");
+    appendLog(`Uploading ${filePath ? basename(filePath) : "Untitled.ino"} to ${selectedBoard.port}…`, "upload");
     try {
       const result = await invoke<OperationResult>("upload_sketch", {
-        sketchPath: path,
+        sketchCode: code,
         port: selectedBoard.port,
         fqbn: selectedBoard.fqbn,
       });
@@ -377,12 +434,45 @@ function App() {
         "upload",
         result.success ? "system" : "stderr",
       );
+      return {
+        success: result.success,
+        message: result.success
+          ? `Upload to ${selectedBoard.port} succeeded.`
+          : `Upload failed with exit code ${result.exitCode ?? "unknown"}. Check Build output for details.`,
+      };
     } catch (error) {
-      appendLog(`Upload failed: ${errorMessage(error)}`, "upload", "stderr");
+      const message = errorMessage(error);
+      appendLog(`Upload failed: ${message}`, "upload", "stderr");
+      return { success: false, message: `Upload failed: ${message}` };
     } finally {
       setReopenAfterUpload(wasOpen);
       setOperation(null);
     }
+  };
+
+  const runAiCompile = async (): Promise<AiToolResult> => {
+    if (aiEdit) {
+      return { success: false, message: "Review and apply or discard the pending code changes before compiling." };
+    }
+    return runCompile();
+  };
+
+  const runAiUpload = async (): Promise<AiToolResult> => {
+    if (aiEdit) {
+      return { success: false, message: "Review and apply or discard the pending code changes before uploading." };
+    }
+    if (!selectedBoard || !compileSucceededRef.current) return runUpload();
+    const approved = await confirm(
+      `The AI requested an upload to ${selectedBoard.name} on ${selectedBoard.port}. Continue?`,
+      {
+        title: "Allow AI upload?",
+        kind: "warning",
+        okLabel: "Upload",
+        cancelLabel: "Cancel",
+      },
+    );
+    if (!approved) return { success: false, message: "Upload cancelled—nothing was written to the board." };
+    return runUpload();
   };
 
   const sendSerial = async () => {
@@ -452,6 +542,7 @@ function App() {
   };
 
   const apiKey = settings.apiKeys[settings.aiProvider] ?? "";
+  const finishStartup = useCallback(() => setShowStartup(false), []);
 
   if (!settingsReady) {
     return (
@@ -684,6 +775,8 @@ function App() {
                 onProposeCode={(replacement) => {
                   setAiEdit({ original: aiEdit?.modified ?? code, modified: replacement });
                 }}
+                onCompile={runAiCompile}
+                onUpload={runAiUpload}
               />
             </Panel>
           </>
@@ -708,6 +801,8 @@ function App() {
           onClose={() => setSettingsOpen(false)}
         />
       )}
+
+      {showStartup && <StartupSplash onComplete={finishStartup} />}
     </main>
   );
 }

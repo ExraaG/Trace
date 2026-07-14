@@ -57,17 +57,6 @@ fn arduino_cli_path() -> PathBuf {
     PathBuf::from(arduino_cli_binary_name())
 }
 
-fn stage_sketch_for_arduino_cli(sketch_path: &str) -> Result<String, String> {
-    let source = Path::new(sketch_path);
-    if !source.is_file() {
-        return Err(format!("Sketch file does not exist: {}", source.display()));
-    }
-
-    let sketch_code = fs::read_to_string(source)
-        .map_err(|error| format!("Could not read sketch {}: {error}", source.display()))?;
-    stage_sketch_source(&sketch_code)
-}
-
 fn stage_sketch_source(sketch_code: &str) -> Result<String, String> {
     let sketch_dir = env::temp_dir()
         .join("trace-arduino")
@@ -436,11 +425,11 @@ async fn upload_sketch(
     app: AppHandle,
     tool_state: State<'_, ToolState>,
     serial_state: State<'_, SerialState>,
-    sketch_path: String,
+    sketch_code: String,
     port: String,
     fqbn: String,
 ) -> Result<OperationResult, String> {
-    let staged_sketch = stage_sketch_for_arduino_cli(&sketch_path)?;
+    let staged_sketch = stage_sketch_source(&sketch_code)?;
     if serial_state.blocked_for_upload.swap(true, Ordering::SeqCst) {
         return Err("An upload is already using the serial port.".to_owned());
     }
@@ -1214,12 +1203,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stages_any_ino_filename_as_a_valid_arduino_sketch() {
-        let source = env::temp_dir().join(format!("trace-untitled-{}.ino", std::process::id()));
-        fs::write(&source, "void setup() {}\nvoid loop() {}\n").unwrap();
-
+    fn stages_unsaved_editor_source_as_a_valid_arduino_sketch() {
         let staged_dir =
-            PathBuf::from(stage_sketch_for_arduino_cli(source.to_str().unwrap()).unwrap());
+            PathBuf::from(stage_sketch_source("void setup() {}\nvoid loop() {}\n").unwrap());
         let staged_file = staged_dir.join(format!("{STAGED_SKETCH_NAME}.ino"));
 
         assert_eq!(staged_dir.file_name().unwrap(), STAGED_SKETCH_NAME);
@@ -1227,7 +1213,6 @@ mod tests {
             fs::read_to_string(staged_file).unwrap(),
             "void setup() {}\nvoid loop() {}\n"
         );
-        let _ = fs::remove_file(source);
     }
 
     #[test]

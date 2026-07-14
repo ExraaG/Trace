@@ -2,6 +2,213 @@
 @tailwind components;
 @tailwind utilities;
 
+.startup-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 45%, #18181d 0%, #09090b 42%, #050506 100%);
+  opacity: 1;
+  transition: opacity 420ms ease, transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.startup-splash.is-leaving {
+  opacity: 0;
+  transform: scale(1.025);
+  pointer-events: none;
+}
+
+.startup-grid {
+  position: absolute;
+  inset: -20%;
+  background-image:
+    linear-gradient(rgb(249 115 22 / 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(249 115 22 / 0.045) 1px, transparent 1px);
+  background-size: 42px 42px;
+  -webkit-mask-image: radial-gradient(circle, black 0%, transparent 64%);
+  mask-image: radial-gradient(circle, black 0%, transparent 64%);
+  opacity: 0;
+  transform: perspective(600px) rotateX(58deg) translateY(12%);
+  animation: startup-grid-in 900ms 300ms ease-out forwards;
+}
+
+.startup-core {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 18rem;
+}
+
+.startup-logo {
+  width: 8.5rem;
+  filter: drop-shadow(0 0 22px rgb(249 115 22 / 0.14));
+  overflow: visible;
+}
+
+.startup-logo-shell {
+  fill: #111114;
+  stroke: #27272a;
+  stroke-width: 2;
+  opacity: 0;
+  transform: scale(0.84);
+  transform-origin: center;
+  animation: startup-shell-in 480ms 80ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.startup-trace {
+  fill: none;
+  stroke-width: 48;
+  stroke-linecap: round;
+}
+
+.startup-trace-white {
+  stroke: #fafafa;
+  stroke-dasharray: 212;
+  stroke-dashoffset: 212;
+  animation: startup-draw-white 420ms 380ms ease-out forwards;
+}
+
+.startup-trace-orange {
+  stroke: #f97316;
+  stroke-dasharray: 720;
+  stroke-dashoffset: 720;
+  animation: startup-draw-orange 720ms 590ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.startup-node {
+  fill: #f97316;
+  opacity: 0;
+  transform: scale(0);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: startup-node-on 260ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.startup-node-one { animation-delay: 520ms; }
+.startup-node-two { animation-delay: 820ms; }
+.startup-node-three { animation-delay: 1260ms; }
+
+.startup-wordmark {
+  margin-top: 1.2rem;
+  color: #f4f4f5;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.58em;
+  text-indent: 0.58em;
+  opacity: 0;
+  transform: translateY(8px);
+  animation: startup-wordmark-in 420ms 1050ms ease-out forwards;
+}
+
+.startup-status {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.65rem;
+  color: #71717a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0;
+  animation: startup-wordmark-in 350ms 1220ms ease-out forwards;
+}
+
+.startup-status span {
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 9999px;
+  background: #f97316;
+  box-shadow: 0 0 9px #f97316;
+  animation: startup-status-pulse 750ms ease-in-out infinite alternate;
+}
+
+.startup-signal {
+  position: absolute;
+  top: 4.2rem;
+  width: 6.5rem;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #f97316);
+  opacity: 0;
+  transform: scaleX(0);
+  animation: startup-signal-connect 520ms 780ms ease-out forwards;
+}
+
+.startup-signal::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #fb923c;
+  box-shadow: 0 0 12px #f97316;
+}
+
+.startup-signal-left {
+  right: calc(50% + 4.25rem);
+  transform-origin: right;
+}
+
+.startup-signal-left::after { right: 0; }
+
+.startup-signal-right {
+  left: calc(50% + 4.25rem);
+  background: linear-gradient(90deg, #f97316, transparent);
+  transform-origin: left;
+}
+
+.startup-signal-right::after { left: 0; }
+
+@keyframes startup-shell-in {
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes startup-draw-white {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes startup-draw-orange {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes startup-node-on {
+  65% { opacity: 1; filter: drop-shadow(0 0 10px #f97316); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes startup-wordmark-in {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes startup-grid-in {
+  to { opacity: 1; transform: perspective(600px) rotateX(58deg) translateY(6%); }
+}
+
+@keyframes startup-signal-connect {
+  to { opacity: 0.45; transform: scaleX(1); }
+}
+
+@keyframes startup-status-pulse {
+  to { opacity: 0.35; box-shadow: 0 0 3px #f97316; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-grid,
+  .startup-logo-shell,
+  .startup-trace,
+  .startup-node,
+  .startup-wordmark,
+  .startup-status,
+  .startup-signal,
+  .startup-status span {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+  }
+}
+
 @layer base {
   * {
     box-sizing: border-box;

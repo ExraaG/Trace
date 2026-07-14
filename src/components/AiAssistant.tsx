@@ -12,7 +12,16 @@ interface AiAssistantProps {
   explainPrompt: string | null;
   onExplainConsumed: () => void;
   onProposeCode: (code: string) => void;
+  onCompile: () => Promise<AiToolResult>;
+  onUpload: () => Promise<AiToolResult>;
 }
+
+interface AiToolResult {
+  success: boolean;
+  message: string;
+}
+
+type AiToolAction = "compile" | "upload" | "compile-upload";
 
 interface ChatMessage extends AiMessage {
   codeEdit?: boolean;
@@ -21,6 +30,16 @@ interface ChatMessage extends AiMessage {
 function isCodeWritingRequest(content: string) {
   return /\b(write|create|generate|make|replace|rewrite|edit|change|update|modify|fix|implement|add|remove)\b/i.test(content)
     && /\b(code|sketch|program|file|ino|editor|arduino|esp32)\b/i.test(content);
+}
+
+function requestedToolAction(content: string): AiToolAction | null {
+  const directRequest = /^\s*(?:(?:please|go ahead and)\s+|(?:(?:can|could|would|will)\s+you\s+))?(?:compile|build|upload|flash)\b/i.test(content);
+  if (!directRequest) return null;
+  const wantsCompile = /\b(?:compile|build)\b/i.test(content);
+  const wantsUpload = /\b(?:upload|flash)\b/i.test(content);
+  if (wantsCompile && wantsUpload) return "compile-upload";
+  if (wantsUpload) return "upload";
+  return wantsCompile ? "compile" : null;
 }
 
 function extractReplacement(content: string) {
@@ -49,6 +68,8 @@ export function AiAssistant({
   explainPrompt,
   onExplainConsumed,
   onProposeCode,
+  onCompile,
+  onUpload,
 }: AiAssistantProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -78,8 +99,32 @@ export function AiAssistant({
   const submit = async () => {
     const content = input.trim();
     if (!content || loading) return;
+    const toolAction = requestedToolAction(content);
     const wantsCode = isCodeWritingRequest(content);
     const displayedMessages = [...messages, { role: "user", content } satisfies ChatMessage];
+    setMessages(displayedMessages);
+    setInput("");
+    setError(null);
+    setEditorNotice(null);
+    setLoading(true);
+
+    if (toolAction) {
+      try {
+        const compileResult = toolAction !== "upload" ? await onCompile() : null;
+        const uploadResult = toolAction !== "compile" && (compileResult?.success ?? true) ? await onUpload() : null;
+        const resultText = [compileResult?.message, uploadResult?.message].filter(Boolean).join("\n");
+        setMessages([...displayedMessages, {
+          role: "assistant",
+          content: resultText || "The requested tool did not run.",
+        }]);
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     const requestMessages = displayedMessages.map(({ role, content: messageContent }, index) => {
       const message = { role, content: messageContent } satisfies AiMessage;
       if (!wantsCode || index !== displayedMessages.length - 1) return message;
@@ -88,11 +133,6 @@ export function AiAssistant({
         content: `${content}\n\nReplace the current Trace editor buffer with a complete working sketch. Return the entire replacement inside <trace-code>...</trace-code>.\n\n<trace-current-code>\n${currentCode}\n</trace-current-code>`,
       };
     });
-    setMessages(displayedMessages);
-    setInput("");
-    setError(null);
-    setEditorNotice(null);
-    setLoading(true);
     let streamed = "";
     try {
       const response = await askProvider(provider, apiKey, model, requestMessages, customUrl, (delta) => {
@@ -126,6 +166,7 @@ export function AiAssistant({
             <Sparkles size={18} />
             <p>Ask about ESP32, Arduino code, or a build error.</p>
             <span>Ask Trace to “write code” to replace the current editor buffer. Changes remain unsaved until you save the sketch.</span>
+            <span>Say “compile this,” “upload it,” or “compile and upload.” Upload always asks for confirmation.</span>
             <span>{provider === "custom" ? `Requests go directly to ${customUrl}.` : `Requests go directly to ${PROVIDERS[provider].label} using your key.`}</span>
           </div>
         )}
