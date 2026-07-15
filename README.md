@@ -89,15 +89,15 @@ The release workflow builds an x86_64 Linux AppImage and DEB, Intel and Apple Si
 When version numbers in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` match, publish with:
 
 ```sh
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.1
+git push origin v0.3.1
 ```
 
 GitHub Actions creates the release and uploads all platform installers. Once that workflow finishes, the one-command installers above use the newest published release automatically.
 
 ## Using Trace
 
-1. Connect a board over USB and select its name and port in the toolbar. Use refresh if it was connected after Trace opened. Hidden family/template definitions are ignored; ambiguous devices require a concrete installed board choice.
+1. Connect a board over USB and select its name and port in the toolbar. Use refresh if it was connected after Trace opened. Hidden family/template definitions are ignored; ambiguous devices require a concrete installed board choice. If automatic detection chooses incorrectly, select **Wrong board?**, search for the installed board model, and Trace will remember that correction for the device's USB identity.
 2. Use the sliders button beside the board picker to review platform-provided options such as flash size, partition scheme, PSRAM, or upload mode. Trace uses platform defaults unless you select another value.
 3. Open an existing `.ino` file or edit the starter sketch. Saving is optional for compilation. Select **Blocks** beside **Code** above the editor to build a sketch visually; connected blocks generate the same `.ino` buffer used by compile and upload.
 4. Select **Compile**. Trace validates expanded build recipes and partition files before starting, then streams `arduino-cli` output into the build panel.

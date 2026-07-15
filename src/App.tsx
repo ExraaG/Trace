@@ -34,6 +34,7 @@ import {
 import { AiAssistant } from "./components/AiAssistant";
 import { AiSettingsModal } from "./components/AiSettingsModal";
 import { BoardOptionsModal } from "./components/BoardOptionsModal";
+import { BoardPickerModal } from "./components/BoardPickerModal";
 import { BuildOutput } from "./components/BuildOutput";
 import { PackageInstallBar } from "./components/PackageInstallBar";
 import { SerialConsole } from "./components/SerialConsole";
@@ -141,6 +142,7 @@ function App() {
   const [boardConfigurationLoading, setBoardConfigurationLoading] = useState(false);
   const [boardConfigurationError, setBoardConfigurationError] = useState<string | null>(null);
   const [boardOptionsOpen, setBoardOptionsOpen] = useState(false);
+  const [boardPickerOpen, setBoardPickerOpen] = useState(false);
   const [operation, setOperation] = useState<Operation | null>(null);
   const [compiledSignature, setCompiledSignature] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -281,6 +283,38 @@ function App() {
       return next;
     });
   }, [appendLog]);
+
+  const rememberBoard = useCallback((fqbn: string) => {
+    if (!selectedBoard) return;
+    setBoardConfiguration(null);
+    setBoardConfigurationError(null);
+    setBoardOptionsOpen(false);
+    setBoardConfigurationLoading(true);
+    updateSettings((current) => ({
+      ...current,
+      boardTypeOverrides: {
+        ...current.boardTypeOverrides,
+        [selectedBoard.identityKey]: fqbn,
+      },
+    }));
+    invalidateCompile();
+    setBoardPickerOpen(false);
+  }, [invalidateCompile, selectedBoard, updateSettings]);
+
+  const forgetBoardOverride = useCallback(() => {
+    if (!selectedBoard) return;
+    setBoardConfiguration(null);
+    setBoardConfigurationError(null);
+    setBoardOptionsOpen(false);
+    setBoardConfigurationLoading(true);
+    updateSettings((current) => {
+      const boardTypeOverrides = { ...current.boardTypeOverrides };
+      delete boardTypeOverrides[selectedBoard.identityKey];
+      return { ...current, boardTypeOverrides };
+    });
+    invalidateCompile();
+    setBoardPickerOpen(false);
+  }, [invalidateCompile, selectedBoard, updateSettings]);
 
   useEffect(() => {
     void readSettings()
@@ -529,6 +563,7 @@ function App() {
       return { success: false, message: "Compile could not start because no board is selected." };
     }
     if (!selectedFqbn) {
+      setBoardPickerOpen(true);
       const message = "Choose a concrete installed board for this port before compiling.";
       appendLog(message, "system", "stderr");
       return { success: false, message };
@@ -862,6 +897,7 @@ function App() {
               setBoardConfiguration(null);
               setBoardConfigurationError(null);
               setBoardOptionsOpen(false);
+              setBoardPickerOpen(false);
               invalidateCompile();
               setReconnectTarget(null);
               if (serialOpen) void closeSerial();
@@ -884,20 +920,7 @@ function App() {
           <div className="layout-switcher max-w-64" title={`Choose the concrete board connected through ${selectedBoard.usbLabel}`}>
             <select
               value={selectedFqbn}
-              onChange={(event) => {
-                const fqbn = event.target.value;
-                setBoardConfiguration(null);
-                setBoardConfigurationError(null);
-                setBoardOptionsOpen(false);
-                updateSettings((current) => ({
-                  ...current,
-                  boardTypeOverrides: {
-                    ...current.boardTypeOverrides,
-                    [selectedBoard.identityKey]: fqbn,
-                  },
-                }));
-                invalidateCompile();
-              }}
+              onChange={(event) => rememberBoard(event.target.value)}
               disabled={operation !== null}
               aria-label="Concrete board model"
             >
@@ -918,6 +941,16 @@ function App() {
             aria-label="Board options"
           >
             {boardConfigurationLoading ? <LoaderCircle size={14} className="animate-spin" /> : <SlidersHorizontal size={14} />}
+          </button>
+        )}
+        {selectedBoard && (
+          <button
+            className="panel-action shrink-0"
+            onClick={() => setBoardPickerOpen(true)}
+            disabled={operation !== null || installedBoards.length === 0}
+            title="Detected the wrong board? Choose and remember the correct model"
+          >
+            Wrong board?
           </button>
         )}
         <button className="icon-button" onClick={() => void refreshBoards()} disabled={boardsLoading || operation !== null} title="Refresh boards" aria-label="Refresh boards">
@@ -1196,6 +1229,18 @@ function App() {
             setBoardOptionsOpen(false);
           }}
           onClose={() => setBoardOptionsOpen(false)}
+        />
+      )}
+
+      {boardPickerOpen && selectedBoard && (
+        <BoardPickerModal
+          board={selectedBoard}
+          choices={boardChoices}
+          selectedFqbn={selectedFqbn}
+          hasOverride={Boolean(selectedOverride)}
+          onSelect={rememberBoard}
+          onUseDetected={forgetBoardOverride}
+          onClose={() => setBoardPickerOpen(false)}
         />
       )}
 
