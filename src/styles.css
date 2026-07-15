@@ -403,16 +403,16 @@
   }
 
   .modal-card {
-    @apply relative max-h-[calc(100vh-3rem)] w-full max-w-lg overflow-y-auto rounded-xl border border-zinc-700 bg-[#111114] p-6 shadow-2xl shadow-black/60;
+    @apply relative max-h-[calc(100vh-3rem)] w-full max-w-lg overflow-x-hidden overflow-y-auto rounded-xl border border-zinc-700 bg-[#111114] p-6 shadow-2xl shadow-black/60;
   }
 
   .settings-field {
-    @apply grid gap-1.5 text-xs font-medium text-zinc-400;
+    @apply grid min-w-0 gap-1.5 text-xs font-medium text-zinc-400;
   }
 
   .settings-field select,
   .settings-field input {
-    @apply h-10 rounded-md border border-line bg-zinc-950 px-3 text-sm text-zinc-200 outline-none focus:border-zinc-600;
+    @apply h-10 w-full min-w-0 max-w-full rounded-md border border-line bg-zinc-950 px-3 text-sm text-zinc-200 outline-none focus:border-zinc-600;
     color-scheme: dark;
   }
 
