@@ -1,5 +1,5 @@
 import { LoaderCircle, TerminalSquare, WandSparkles } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { LogEntry, Operation } from "../types";
 
 interface BuildOutputProps {
@@ -13,7 +13,7 @@ export function BuildOutput({ logs, operation, onClear, onExplain }: BuildOutput
   const scrollRef = useRef<HTMLDivElement>(null);
   const [followOutput, setFollowOutput] = useState(true);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!followOutput) return;
     const element = scrollRef.current;
     if (element) element.scrollTop = element.scrollHeight;

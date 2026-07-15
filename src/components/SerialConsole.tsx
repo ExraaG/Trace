@@ -1,5 +1,5 @@
 import { Clock3, Plug, Send, Unplug } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { Operation, SerialEntry } from "../types";
 
 const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
@@ -30,7 +30,7 @@ export function SerialConsole(props: SerialConsoleProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [followOutput, setFollowOutput] = useState(true);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!followOutput) return;
     const element = scrollRef.current;
     if (element) element.scrollTop = element.scrollHeight;

@@ -2,6 +2,11 @@ export interface Board {
   name: string;
   port: string;
   fqbn: string;
+  matched: boolean;
+  usbLabel: string;
+  vid: string;
+  pid: string;
+  identityKey: string;
 }
 
 export type Operation = "compile" | "upload" | "library";
@@ -89,5 +94,6 @@ export interface AppSettings {
   customProviderUrl: string;
   customProviderModel: string;
   serialTimestamps: boolean;
+  boardTypeOverrides: Record<string, string>;
   layout: PanelLayout;
 }

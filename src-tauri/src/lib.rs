@@ -85,6 +85,11 @@ struct Board {
     name: String,
     port: String,
     fqbn: String,
+    matched: bool,
+    usb_label: String,
+    vid: String,
+    pid: String,
+    identity_key: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -182,6 +187,10 @@ struct DetectedPort {
     #[serde(default, alias = "matching_boards")]
     boards: Vec<DetectedBoard>,
     #[serde(default)]
+    properties: HashMap<String, Value>,
+    #[serde(default)]
+    protocol_label: String,
+    #[serde(default)]
     port: Option<DetectedPortDetails>,
 }
 
@@ -191,6 +200,10 @@ struct DetectedPortDetails {
     address: String,
     #[serde(default)]
     label: String,
+    #[serde(default)]
+    properties: HashMap<String, Value>,
+    #[serde(default)]
+    protocol_label: String,
 }
 
 #[derive(Deserialize)]
@@ -209,6 +222,10 @@ fn friendly_command_error(command: &Path, error: std::io::Error) -> String {
     } else {
         format!("Could not start {}: {error}", command.display())
     }
+}
+
+fn contains_any(value: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| value.contains(needle))
 }
 
 fn parse_board_list(bytes: &[u8]) -> Result<Vec<Board>, String> {
@@ -234,31 +251,157 @@ fn parse_board_list(bytes: &[u8]) -> Result<Vec<Board>, String> {
             .boards
             .iter()
             .find(|board| board.fqbn.starts_with("esp32:esp32:"));
-        let any_board = port.boards.first();
-        let detected = esp32.or(any_board);
-        let name = detected
+        // A board explicitly identified as another Arduino family must not be
+        // offered as an ESP32 target. Unknown USB-UART bridges remain usable
+        // because many inexpensive ESP32 boards do not report an FQBN.
+        if esp32.is_none() && !port.boards.is_empty() {
+            continue;
+        }
+        let matched = esp32.is_some();
+        let details = port.port.as_ref();
+        let properties = details
+            .map(|value| &value.properties)
+            .unwrap_or(&port.properties);
+        let property = |name: &str| {
+            properties
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .and_then(|(_, value)| value.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_owned()
+        };
+        let vid = property("vid");
+        let pid = property("pid");
+        let product = property("product");
+        let manufacturer = property("manufacturer");
+        let serial = property("serialNumber");
+        let nested_label = details
+            .map(|value| value.label.as_str())
+            .unwrap_or_default();
+        let protocol_label = details
+            .map(|value| value.protocol_label.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&port.protocol_label);
+        let identity_text = format!(
+            "{address} {} {nested_label} {protocol_label} {product} {manufacturer}",
+            port.label
+        )
+        .to_ascii_lowercase();
+        let unrelated_device = contains_any(
+            &identity_text,
+            &[
+                "bluetooth",
+                "modem",
+                "gps",
+                "gnss",
+                "cellular",
+                "printer",
+                "scanner",
+                "camera",
+                "audio",
+                "midi",
+                "phone",
+                "tablet",
+                "keyboard",
+                "mouse",
+                "ups",
+                "z-wave",
+            ],
+        );
+        if !matched && unrelated_device {
+            continue;
+        }
+        let usb_path = {
+            let lower = address.to_ascii_lowercase();
+            lower.contains("ttyusb")
+                || lower.contains("ttyacm")
+                || lower.contains("cu.usb")
+                || lower.contains("tty.usb")
+        };
+        let bridge_hint = contains_any(
+            &identity_text,
+            &[
+                "esp32",
+                "espressif",
+                "arduino",
+                "cp210",
+                "ch340",
+                "ch341",
+                "ft232",
+                "ftdi",
+                "usb serial",
+                "usb-to-uart",
+                "usb to uart",
+                "uart bridge",
+                "usb jtag",
+                "usb cdc",
+            ],
+        );
+        let has_usb_identity = !vid.is_empty()
+            || !pid.is_empty()
+            || identity_text.contains("serial port (usb)")
+            || identity_text.contains("usb serial");
+        let windows_usb_port =
+            cfg!(windows) && address.to_ascii_lowercase().starts_with("com") && has_usb_identity;
+        if !matched && !(usb_path || bridge_hint || windows_usb_port) {
+            continue;
+        }
+
+        let name = esp32
             .map(|board| board.name.clone())
             .filter(|name| !name.trim().is_empty())
-            .or_else(|| (!port.label.trim().is_empty()).then_some(port.label.clone()))
-            .or_else(|| {
-                port.port
-                    .as_ref()
-                    .map(|details| details.label.trim())
-                    .filter(|label| !label.is_empty())
-                    .map(str::to_owned)
-            })
-            .unwrap_or_else(|| "ESP32 board".to_owned());
+            .unwrap_or_else(|| "Possible ESP32 board".to_owned());
         let fqbn = esp32
             .map(|board| board.fqbn.clone())
             .filter(|fqbn| !fqbn.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_ESP32_FQBN.to_owned());
+        let product_lower = product.to_ascii_lowercase();
+        let usb_label = if product_lower.contains("cp2102") {
+            "CP2102".to_owned()
+        } else if product_lower.contains("cp210") {
+            "CP210x".to_owned()
+        } else if product_lower.contains("ch340") {
+            "CH340".to_owned()
+        } else if product_lower.contains("ch341") {
+            "CH341".to_owned()
+        } else if product_lower.contains("ft232")
+            || manufacturer.to_ascii_lowercase().contains("ftdi")
+        {
+            "FTDI".to_owned()
+        } else if !product.is_empty() {
+            product
+        } else if !vid.is_empty() || !pid.is_empty() {
+            format!("USB serial {vid}:{pid}")
+        } else {
+            "USB serial".to_owned()
+        };
+        let identity_key = if !vid.is_empty() || !pid.is_empty() {
+            if serial.is_empty() {
+                format!("{address}|{vid}:{pid}")
+            } else {
+                format!("{vid}:{pid}:{serial}")
+            }
+        } else {
+            address.to_owned()
+        };
         result.push(Board {
             name,
             port: address.to_owned(),
             fqbn,
+            matched,
+            usb_label,
+            vid,
+            pid,
+            identity_key,
         });
     }
-    result.sort_by(|left, right| left.port.cmp(&right.port));
+    result.sort_by(|left, right| {
+        right
+            .matched
+            .cmp(&left.matched)
+            .then_with(|| left.port.cmp(&right.port))
+    });
     Ok(result)
 }
 
@@ -1789,6 +1932,11 @@ mod tests {
                 name: "ESP32 Dev Module".to_owned(),
                 port: "/dev/ttyUSB0".to_owned(),
                 fqbn: "esp32:esp32:esp32".to_owned(),
+                matched: true,
+                usb_label: "USB serial".to_owned(),
+                vid: String::new(),
+                pid: String::new(),
+                identity_key: "/dev/ttyUSB0".to_owned(),
             }]
         );
     }
@@ -1805,9 +1953,14 @@ mod tests {
         assert_eq!(
             parse_board_list(json).unwrap(),
             vec![Board {
-                name: "USB JTAG/serial debug unit".to_owned(),
+                name: "Possible ESP32 board".to_owned(),
                 port: "COM4".to_owned(),
                 fqbn: DEFAULT_ESP32_FQBN.to_owned(),
+                matched: false,
+                usb_label: "USB serial".to_owned(),
+                vid: String::new(),
+                pid: String::new(),
+                identity_key: "COM4".to_owned(),
             }]
         );
     }
@@ -1826,11 +1979,64 @@ mod tests {
         assert_eq!(
             parse_board_list(json).unwrap(),
             vec![Board {
-                name: "/dev/ttyUSB0".to_owned(),
+                name: "Possible ESP32 board".to_owned(),
                 port: "/dev/ttyUSB0".to_owned(),
                 fqbn: DEFAULT_ESP32_FQBN.to_owned(),
+                matched: false,
+                usb_label: "USB serial".to_owned(),
+                vid: String::new(),
+                pid: String::new(),
+                identity_key: "/dev/ttyUSB0".to_owned(),
             }]
         );
+    }
+
+    #[test]
+    fn filters_builtin_and_unrelated_serial_devices() {
+        let json = br#"{
+          "detected_ports": [
+            {"port": {"address": "/dev/ttyS0", "label": "/dev/ttyS0", "protocol": "serial"}},
+            {"port": {
+              "address": "/dev/ttyACM1",
+              "label": "USB GPS receiver",
+              "protocol": "serial",
+              "protocol_label": "Serial Port (USB)",
+              "properties": {"vid": "0x1234", "pid": "0x5678", "product": "GNSS GPS modem"}
+            }},
+            {
+              "address": "/dev/ttyACM2",
+              "label": "Arduino Uno",
+              "boards": [{"name": "Arduino Uno", "fqbn": "arduino:avr:uno"}]
+            }
+          ]
+        }"#;
+
+        assert!(parse_board_list(json).unwrap().is_empty());
+    }
+
+    #[test]
+    fn identifies_cp2102_and_builds_a_stable_override_key() {
+        let json = br#"{
+          "detected_ports": [{
+            "port": {
+              "address": "/dev/ttyUSB0",
+              "label": "/dev/ttyUSB0",
+              "protocol": "serial",
+              "protocol_label": "Serial Port (USB)",
+              "properties": {
+                "vid": "0x10C4",
+                "pid": "0xEA60",
+                "product": "CP2102 USB to UART Bridge Controller",
+                "serialNumber": "0001"
+              }
+            }
+          }]
+        }"#;
+        let board = parse_board_list(json).unwrap().remove(0);
+        assert_eq!(board.name, "Possible ESP32 board");
+        assert_eq!(board.usb_label, "CP2102");
+        assert_eq!(board.identity_key, "0x10C4:0xEA60:0001");
+        assert!(!board.matched);
     }
 
     #[test]

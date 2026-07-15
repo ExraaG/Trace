@@ -44,6 +44,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customProviderUrl: "http://localhost:11434/v1/chat/completions",
   customProviderModel: "local-model",
   serialTimestamps: false,
+  boardTypeOverrides: {},
   layout: PRESET_LAYOUTS.debug,
 };
 
@@ -95,6 +96,11 @@ function mergeSettings(value: Partial<AppSettings> | null | undefined): AppSetti
     customProviderUrl: typeof value.customProviderUrl === "string" ? value.customProviderUrl : DEFAULT_SETTINGS.customProviderUrl,
     customProviderModel: typeof value.customProviderModel === "string" ? value.customProviderModel : DEFAULT_SETTINGS.customProviderModel,
     serialTimestamps: typeof value.serialTimestamps === "boolean" ? value.serialTimestamps : false,
+    boardTypeOverrides: Object.fromEntries(
+      Object.entries(value.boardTypeOverrides ?? {}).filter(
+        ([key, fqbn]) => key.trim() && typeof fqbn === "string" && fqbn.startsWith("esp32:esp32:"),
+      ),
+    ),
     layout: {
       preset: PRESET_IDS.includes(layout?.preset as LayoutPreset) ? layout!.preset : DEFAULT_SETTINGS.layout.preset,
       outer: cleanLayout(layout?.outer, DEFAULT_SETTINGS.layout.outer, ["workspace", "ai"]),

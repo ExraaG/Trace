@@ -9,8 +9,65 @@ permissions:
   contents: write
 
 jobs:
+  verify:
+    name: Verify release source
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Confirm matching versions
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const packageVersion = require('./package.json').version;
+          const tauriVersion = require('./src-tauri/tauri.conf.json').version;
+          const cargo = fs.readFileSync('./src-tauri/Cargo.toml', 'utf8');
+          const cargoVersion = cargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+          if (!cargoVersion || packageVersion !== tauriVersion || packageVersion !== cargoVersion) {
+            throw new Error(`Version mismatch: package=${packageVersion}, tauri=${tauriVersion}, cargo=${cargoVersion}`);
+          }
+          console.log(`Trace version ${packageVersion} is consistent.`);
+          NODE
+
+      - name: Run release checks
+        run: |
+          sh -n install.sh
+          npm audit --audit-level=high
+          npm run build
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Audit Rust dependencies
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: src-tauri
+
   build:
     name: Build ${{ matrix.name }}
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -73,7 +130,7 @@ jobs:
 
             Windows PowerShell:
             `irm https://raw.githubusercontent.com/ExraaG/Trace/main/install.ps1 | iex`
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
           args: ${{ matrix.args }}

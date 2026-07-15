@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import {
+  AlertTriangle,
   Bot,
   Check,
   ChevronDown,
@@ -63,6 +64,23 @@ void loop() {
 }
 `;
 
+const BOARD_VARIANTS = [
+  { label: "ESP32 Dev Module", fqbn: "esp32:esp32:esp32" },
+  { label: "ESP32-S2", fqbn: "esp32:esp32:esp32s2" },
+  { label: "ESP32-S3", fqbn: "esp32:esp32:esp32s3" },
+  { label: "ESP32-C3", fqbn: "esp32:esp32:esp32c3" },
+] as const;
+
+function sourceSignature(source: string, port: string, fqbn: string) {
+  let hash = 2166136261;
+  const value = `${port}\0${fqbn}\0${source}`;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${value.length}:${(hash >>> 0).toString(16)}`;
+}
+
 interface AiEditProposal {
   original: string;
   modified: string;
@@ -109,24 +127,25 @@ function App() {
   const [selectedPort, setSelectedPort] = useState("");
   const [boardsLoading, setBoardsLoading] = useState(false);
   const [operation, setOperation] = useState<Operation | null>(null);
-  const [compileSucceeded, setCompileSucceeded] = useState(false);
+  const [compiledSignature, setCompiledSignature] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [libraryInstalls, setLibraryInstalls] = useState<Record<string, LibraryInstallEvent>>({});
   const [serialOpen, setSerialOpen] = useState(false);
   const [serialEntries, setSerialEntries] = useState<SerialEntry[]>([]);
   const [baudRate, setBaudRate] = useState(115200);
   const [serialInput, setSerialInput] = useState("");
-  const [reopenAfterUpload, setReopenAfterUpload] = useState(false);
+  const [reconnectTarget, setReconnectTarget] = useState<{ port: string; baudRate: number } | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [boardError, setBoardError] = useState<string | null>(null);
   const [showStartup, setShowStartup] = useState(true);
   const [explainPrompt, setExplainPrompt] = useState<string | null>(null);
   const [aiEdit, setAiEdit] = useState<AiEditProposal | null>(null);
   const logId = useRef(0);
   const serialId = useRef(0);
   const serialStartedAt = useRef(Date.now());
-  const compileSucceededRef = useRef(compileSucceeded);
+  const compileSucceededRef = useRef(false);
   const dirtyRef = useRef(dirty);
   const filePathRef = useRef(filePath);
   const closeApprovedRef = useRef(false);
@@ -139,6 +158,20 @@ function App() {
     () => boards.find((board) => board.port === selectedPort) ?? null,
     [boards, selectedPort],
   );
+  const selectedFqbn = selectedBoard
+    ? settings.boardTypeOverrides[selectedBoard.identityKey] ?? selectedBoard.fqbn
+    : "";
+  const selectedBoardName = selectedBoard?.matched
+    ? selectedBoard.name
+    : selectedBoard
+      ? `Possible ESP32 (${selectedBoard.usbLabel})`
+      : "ESP32 board";
+  const currentCompileSignature = selectedBoard
+    ? sourceSignature(code, selectedBoard.port, selectedFqbn)
+    : null;
+  const currentCompileSignatureRef = useRef<string | null>(null);
+  currentCompileSignatureRef.current = currentCompileSignature;
+  const compileSucceeded = currentCompileSignature !== null && compiledSignature === currentCompileSignature;
   const includedHeaders = useMemo(() => extractLibraryHeaders(code), [code]);
   const libraryInstallList = useMemo(() => Object.values(libraryInstalls), [libraryInstalls]);
   const activeLibraryInstalls = useMemo(
@@ -156,6 +189,11 @@ function App() {
   useEffect(() => {
     compileSucceededRef.current = compileSucceeded;
   }, [compileSucceeded]);
+
+  const invalidateCompile = useCallback(() => {
+    setCompiledSignature(null);
+    compileSucceededRef.current = false;
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -186,7 +224,10 @@ function App() {
 
   const appendLog = useCallback(
     (text: string, source: LogEntry["source"] = "system", stream: LogEntry["stream"] = "system") => {
-      setLogs((entries) => [...entries, { id: logId.current++, source, stream, text }]);
+      setLogs((entries) => [
+        ...entries.slice(-4999),
+        { id: logId.current++, source, stream, text },
+      ]);
     },
     [],
   );
@@ -256,24 +297,27 @@ function App() {
     };
   }, [appendLog, appendSerial]);
 
-  const refreshBoards = useCallback(async () => {
-    setBoardsLoading(true);
+  const refreshBoards = useCallback(async (showSpinner = true) => {
+    if (showSpinner) setBoardsLoading(true);
     try {
       const detected = await invoke<Board[]>("list_boards");
+      setBoardError(null);
       setBoards(detected);
       setSelectedPort((current) => {
         if (detected.some((board) => board.port === current)) return current;
         return detected[0]?.port ?? "";
       });
     } catch (error) {
-      appendLog(`Board detection failed: ${errorMessage(error)}`, "system", "stderr");
+      setBoardError(errorMessage(error));
     } finally {
-      setBoardsLoading(false);
+      if (showSpinner) setBoardsLoading(false);
     }
-  }, [appendLog]);
+  }, []);
 
   useEffect(() => {
     void refreshBoards();
+    const timer = window.setInterval(() => void refreshBoards(false), 2500);
+    return () => window.clearInterval(timer);
   }, [refreshBoards]);
 
   useEffect(() => {
@@ -281,12 +325,12 @@ function App() {
     const timer = window.setTimeout(() => {
       void invoke("sync_libraries", {
         headers: includedHeaders,
-        fqbn: selectedBoard.fqbn,
+        fqbn: selectedFqbn,
         retry: false,
       }).catch((error) => appendLog(`Library check failed: ${errorMessage(error)}`, "system", "stderr"));
     }, 650);
     return () => window.clearTimeout(timer);
-  }, [appendLog, includedHeaders, selectedBoard]);
+  }, [appendLog, includedHeaders, selectedBoard?.identityKey, selectedFqbn]);
 
   useEffect(() => {
     const layout = settings.layout;
@@ -347,12 +391,11 @@ function App() {
     let inoPath = path;
     if (!inoPath.toLowerCase().endsWith(".ino")) inoPath += ".ino";
     await invoke("write_sketch", { path: inoPath, contents: code });
-    if (filePath !== inoPath) setCompileSucceeded(false);
     setFilePath(inoPath);
     setDirty(false);
     appendLog(`Saved ${inoPath}`);
     return inoPath;
-  }, [appendLog, code, filePath]);
+  }, [appendLog, code]);
 
   const saveAsSketch = useCallback(async () => {
     const path = await save({
@@ -370,6 +413,18 @@ function App() {
   }, [appendLog, filePath, saveTo]);
 
   const openSketch = async () => {
+    if (dirty || filePath === null) {
+      const discard = await confirm(
+        "The current sketch has not been saved. Open another sketch and discard it?",
+        {
+          title: "Unsaved sketch",
+          kind: "warning",
+          okLabel: "Discard and open",
+          cancelLabel: "Keep editing",
+        },
+      ).catch(() => window.confirm("Discard the unsaved sketch and open another file?"));
+      if (!discard) return;
+    }
     const path = await open({
       title: "Open Arduino sketch",
       multiple: false,
@@ -383,7 +438,7 @@ function App() {
       setAiEdit(null);
       setFilePath(path);
       setDirty(false);
-      setCompileSucceeded(false);
+      invalidateCompile();
       appendLog(`Opened ${path}`);
     } catch (error) {
       appendLog(`Open failed: ${errorMessage(error)}`, "system", "stderr");
@@ -407,7 +462,7 @@ function App() {
       try {
         await invoke("sync_libraries", {
           headers: includedHeaders,
-          fqbn: selectedBoard.fqbn,
+          fqbn: selectedFqbn,
           retry: false,
         });
       } catch (error) {
@@ -415,16 +470,16 @@ function App() {
       }
     }
     setOperation("compile");
-    setCompileSucceeded(false);
-    compileSucceededRef.current = false;
-    appendLog(`Compiling ${filePath ? basename(filePath) : "Untitled.ino"} for ${selectedBoard.name}…`, "compile");
+    invalidateCompile();
+    appendLog(`Compiling ${filePath ? basename(filePath) : "Untitled.ino"} for ${selectedBoardName}…`, "compile");
     try {
       const result = await invoke<OperationResult>("compile_sketch", {
         sketchCode: code,
-        fqbn: selectedBoard.fqbn,
+        fqbn: selectedFqbn,
       });
-      setCompileSucceeded(result.success);
-      compileSucceededRef.current = result.success;
+      setCompiledSignature(result.success ? currentCompileSignature : null);
+      compileSucceededRef.current = result.success
+        && currentCompileSignatureRef.current === currentCompileSignature;
       if (!result.success && result.missingHeader) {
         const header = result.missingHeader;
         appendLog(
@@ -451,7 +506,7 @@ function App() {
       return {
         success: result.success,
         message: result.success
-          ? `Compile succeeded for ${selectedBoard.name}.`
+          ? `Compile succeeded for ${selectedBoardName}.`
           : `Compile failed with exit code ${result.exitCode ?? "unknown"}. Check Build output for details.`,
       };
     } catch (error) {
@@ -463,17 +518,19 @@ function App() {
     }
   };
 
-  const openSerial = useCallback(async () => {
-    if (!selectedPort) {
+  const openSerial = useCallback(async (target?: { port: string; baudRate: number }) => {
+    const port = target?.port ?? selectedPort;
+    const rate = target?.baudRate ?? baudRate;
+    if (!port) {
       appendSerial("Select a port before connecting.");
       return false;
     }
     try {
       serialStartedAt.current = Date.now();
-      await invoke("open_serial", { port: selectedPort, baudRate });
+      await invoke("open_serial", { port, baudRate: rate });
       setSerialOpen(true);
-      setReopenAfterUpload(false);
-      appendSerial(`Connected to ${selectedPort} at ${baudRate} baud.`);
+      setReconnectTarget(null);
+      appendSerial(`Connected to ${port} at ${rate} baud.`);
       return true;
     } catch (error) {
       appendSerial(`Connection failed: ${errorMessage(error)}`);
@@ -503,8 +560,9 @@ function App() {
       return { success: false, message: "Upload is disabled until the current editor buffer compiles successfully." };
     }
     const wasOpen = serialOpen;
+    const serialTarget = wasOpen ? { port: selectedPort, baudRate } : null;
     setOperation("upload");
-    setReopenAfterUpload(false);
+    setReconnectTarget(null);
     if (wasOpen) {
       appendSerial("Disconnected for upload…");
       await closeSerial("upload");
@@ -514,7 +572,7 @@ function App() {
       const result = await invoke<OperationResult>("upload_sketch", {
         sketchCode: code,
         port: selectedBoard.port,
-        fqbn: selectedBoard.fqbn,
+        fqbn: selectedFqbn,
       });
       appendLog(
         result.success ? "Upload finished successfully." : `Upload failed (exit ${result.exitCode ?? "unknown"}).`,
@@ -532,7 +590,7 @@ function App() {
       appendLog(`Upload failed: ${message}`, "upload", "stderr");
       return { success: false, message: `Upload failed: ${message}` };
     } finally {
-      setReopenAfterUpload(wasOpen);
+      setReconnectTarget(serialTarget);
       setOperation(null);
     }
   };
@@ -550,7 +608,7 @@ function App() {
     }
     if (!selectedBoard || !compileSucceededRef.current) return runUpload();
     const approved = await confirm(
-      `The AI requested an upload to ${selectedBoard.name} on ${selectedBoard.port}. Continue?`,
+      `The AI requested an upload to ${selectedBoardName} on ${selectedBoard.port}. Continue?`,
       {
         title: "Allow AI upload?",
         kind: "warning",
@@ -580,7 +638,7 @@ function App() {
     }));
     void invoke("sync_libraries", {
       headers: [header],
-      fqbn: selectedBoard.fqbn,
+      fqbn: selectedFqbn,
       retry: true,
     }).catch((error) => {
       const message = errorMessage(error);
@@ -632,7 +690,7 @@ function App() {
       ...current,
       onboardingComplete: true,
       aiEnabled: false,
-      layout: { ...current.layout, preset: "custom", aiVisible: false, outer: { workspace: 100 } },
+      layout: { ...current.layout, preset: "custom", aiVisible: false, outer: { workspace: 100, ai: 0 } },
     }));
   };
 
@@ -705,17 +763,49 @@ function App() {
             value={selectedPort}
             onChange={(event) => {
               setSelectedPort(event.target.value);
-              setCompileSucceeded(false);
+              invalidateCompile();
+              setReconnectTarget(null);
               if (serialOpen) void closeSerial();
             }}
             disabled={boardsLoading || operation !== null}
             aria-label="Target board and port"
           >
             {boards.length === 0 && <option value="">No boards connected</option>}
-            {boards.map((board) => <option key={board.port} value={board.port}>{board.name} · {board.port}</option>)}
+            {boards.map((board) => (
+              <option key={board.identityKey} value={board.port}>
+                {board.matched
+                  ? `${board.name} · ${board.port}`
+                  : `Possible ESP32 (${board.usbLabel}) · ${board.port}`}
+              </option>
+            ))}
           </select>
           <ChevronDown size={13} className="pointer-events-none text-zinc-500" />
         </div>
+        {selectedBoard && !selectedBoard.matched && (
+          <div className="layout-switcher" title={`Choose the ESP32 family connected through ${selectedBoard.usbLabel}`}>
+            <select
+              value={selectedFqbn}
+              onChange={(event) => {
+                const fqbn = event.target.value;
+                updateSettings((current) => ({
+                  ...current,
+                  boardTypeOverrides: {
+                    ...current.boardTypeOverrides,
+                    [selectedBoard.identityKey]: fqbn,
+                  },
+                }));
+                invalidateCompile();
+              }}
+              disabled={operation !== null}
+              aria-label="ESP32 board family"
+            >
+              {BOARD_VARIANTS.map((variant) => (
+                <option key={variant.fqbn} value={variant.fqbn}>{variant.label}</option>
+              ))}
+            </select>
+            <ChevronDown size={12} className="pointer-events-none text-zinc-500" />
+          </div>
+        )}
         <button className="icon-button" onClick={() => void refreshBoards()} disabled={boardsLoading || operation !== null} title="Refresh boards" aria-label="Refresh boards">
           <RefreshCw size={14} className={boardsLoading ? "animate-spin" : ""} />
         </button>
@@ -751,6 +841,13 @@ function App() {
           </button>
         </div>
       </header>
+
+      {boardError && (
+        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-red-950/70 bg-red-950/20 px-3 text-[11px] text-red-300" role="status">
+          <AlertTriangle size={12} /> Board detection failed: {boardError}
+          <button className="panel-action ml-auto" onClick={() => void refreshBoards()}>Retry</button>
+        </div>
+      )}
 
       <PackageInstallBar installs={libraryInstallList} onRetry={retryLibraryInstall} />
 
@@ -790,7 +887,7 @@ function App() {
                         onClick={() => {
                           setCode(aiEdit.modified);
                           setDirty(true);
-                          setCompileSucceeded(false);
+                          invalidateCompile();
                           setAiEdit(null);
                         }}
                       >
@@ -832,7 +929,7 @@ function App() {
                       onChange={(value) => {
                         setCode(value ?? "");
                         setDirty(true);
-                        setCompileSucceeded(false);
+                        invalidateCompile();
                       }}
                       options={{
                         automaticLayout: true,
@@ -876,14 +973,14 @@ function App() {
                     timestamps={settings.serialTimestamps}
                     input={serialInput}
                     operation={operation}
-                    reconnectAvailable={reopenAfterUpload}
+                    reconnectAvailable={reconnectTarget !== null}
                     onBaudRate={setBaudRate}
                     onTimestamps={(value) => updateSettings((current) => ({ ...current, serialTimestamps: value }))}
                     onInput={setSerialInput}
                     onToggle={() => serialOpen ? void closeSerial() : void openSerial()}
                     onSend={() => void sendSerial()}
                     onClear={() => setSerialEntries([])}
-                    onReconnect={() => void openSerial()}
+                    onReconnect={() => reconnectTarget && void openSerial(reconnectTarget)}
                   />
                 </Panel>
               </Group>
