@@ -123,14 +123,18 @@ jobs:
           tagName: v__VERSION__
           releaseName: Trace v__VERSION__
           releaseBody: |
-            Trace desktop installers for Linux, macOS, and Windows.
+            Trace is a focused ESP32 and Arduino desktop IDE.
+
+            Edit an Arduino sketch, compile and upload through Arduino CLI, follow build output live, and use the built-in serial console without leaving the app.
 
             Linux and macOS:
             `curl -fsSL https://raw.githubusercontent.com/ExraaG/Trace/main/install.sh | sh`
 
             Windows PowerShell:
             `irm https://raw.githubusercontent.com/ExraaG/Trace/main/install.ps1 | iex`
-          releaseDraft: true
+
+            This first release is not code-signed. Windows SmartScreen or macOS Gatekeeper may ask you to confirm that you want to open it.
+          releaseDraft: false
           prerelease: false
           generateReleaseNotes: true
           args: ${{ matrix.args }}

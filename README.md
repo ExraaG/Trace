@@ -1,12 +1,12 @@
 # Trace
 
-Trace is a focused, dark-mode-first desktop IDE for ESP32 Arduino development. It keeps the editor experience modern and small while delegating board discovery, dependency resolution, compilation, and upload to the proven `arduino-cli` toolchain.
+Trace is a focused desktop IDE for ESP32 and Arduino development. It provides a modern editor, live build output, automatic library installation, upload controls, and a serial console while leaving the actual toolchain work to `arduino-cli`.
 
-The v1 workflow is intentionally narrow: edit one `.ino` sketch, choose a connected ESP32, compile, upload, and inspect or send serial data from the built-in console. Build and upload output streams into the UI as it arrives. Trace automatically installs missing libraries referenced by `#include` directives, but does not include multi-file projects, a file tree, a manual library browser, board/core management, or themes.
+Trace deliberately keeps the workflow small: open or write one `.ino` sketch, choose an ESP32, compile, upload, and inspect serial data. There is no project tree or board-package manager to get between you and the board.
 
 ## Install Trace
 
-After the repository is public and the first release is published, the installer handles Trace, Arduino CLI, and the ESP32 Arduino core in one command.
+The installer sets up Trace, Arduino CLI, and the ESP32 Arduino core. It installs into your user account and does not require administrator access for Trace itself.
 
 **Linux (x86_64) and macOS (Intel or Apple Silicon):**
 
@@ -20,7 +20,11 @@ curl -fsSL https://raw.githubusercontent.com/ExraaG/Trace/main/install.sh | sh
 irm https://raw.githubusercontent.com/ExraaG/Trace/main/install.ps1 | iex
 ```
 
-The Linux installer places a self-contained AppImage and desktop entry in the current user's home directory. The macOS installer copies Trace to `~/Applications`, and the Windows installer uses the native Trace setup package. No administrator access is required for Trace or Arduino CLI itself. A board-specific USB driver may still be required on Windows or macOS; Linux users may need serial-device permission through their distribution's `dialout` or `uucp` group.
+Want to inspect a script before running it? Open [`install.sh`](install.sh) or [`install.ps1`](install.ps1) in this repository first.
+
+The Linux installer places a self-contained AppImage and application-menu entry in your home directory. The macOS installer copies Trace to `~/Applications`, and the Windows installer runs the native Trace setup package. A board-specific USB driver may still be required on Windows or macOS. Linux users may need serial-device permission through their distribution's `dialout` or `uucp` group.
+
+The first release is not code-signed. Windows SmartScreen or macOS Gatekeeper may ask you to confirm that you want to open Trace. Only accept that prompt when you downloaded Trace from this repository's official release page.
 
 ## Prerequisites
 
@@ -77,11 +81,11 @@ npm run tauri build
 
 Artifacts are written under `src-tauri/target/release/bundle/` (`.deb` and `.rpm` for a local Linux build). Production installers for another operating system should be built on that operating system; platform signing may be required for distribution.
 
-## Publishing a release
+## Maintainer release process
 
 The release workflow builds an x86_64 Linux AppImage and DEB, Intel and Apple Silicon macOS DMGs, and Windows x64 NSIS/MSI installers. It only runs for version tags, so normal pushes never publish a release.
 
-When the repository is public and version numbers in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` match, publish with:
+When version numbers in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` match, publish with:
 
 ```sh
 git tag v0.1.0
