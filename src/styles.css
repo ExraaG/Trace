@@ -297,7 +297,26 @@
   }
 
   .compact-select {
-    @apply rounded border border-line bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-300 outline-none disabled:opacity-50;
+    @apply appearance-none rounded border border-line px-2 py-0.5 pr-6 text-[11px] outline-none;
+    color-scheme: dark;
+    color: #d4d4d8;
+    background-color: #18181b;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-position: right 0.4rem center;
+    background-repeat: no-repeat;
+  }
+
+  .compact-select:disabled {
+    cursor: not-allowed;
+    color: #71717a;
+    -webkit-text-fill-color: #71717a;
+    background-color: #18181b;
+    opacity: 1;
+  }
+
+  .compact-select option {
+    color: #d4d4d8;
+    background: #18181b;
   }
 
   .layout-switcher {
