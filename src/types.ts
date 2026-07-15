@@ -4,7 +4,7 @@ export interface Board {
   fqbn: string;
 }
 
-export type Operation = "compile" | "upload";
+export type Operation = "compile" | "upload" | "library";
 
 export interface ToolOutput {
   operation: Operation;
@@ -15,6 +15,7 @@ export interface ToolOutput {
 export interface OperationResult {
   success: boolean;
   exitCode: number | null;
+  missingHeader: string | null;
 }
 
 export type LibraryInstallStatus = "resolving" | "downloading" | "installing" | "installed" | "failed";
@@ -46,7 +47,7 @@ export interface SerialStateEvent {
 
 export interface LogEntry {
   id: number;
-  source: "compile" | "upload" | "system";
+  source: "compile" | "upload" | "library" | "system";
   stream: "stdout" | "stderr" | "system";
   text: string;
 }

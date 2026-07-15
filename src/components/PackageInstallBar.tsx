@@ -83,7 +83,7 @@ export function PackageInstallBar({ installs, onRetry }: PackageInstallBarProps)
                 </div>
                 {install.status === "failed" && (
                   <button className="panel-action flex shrink-0 items-center gap-1" onClick={() => onRetry(install.header)}>
-                    <RotateCcw size={10} /> Retry
+                    <RotateCcw size={10} /> Install
                   </button>
                 )}
               </div>

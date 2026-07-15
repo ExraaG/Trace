@@ -145,13 +145,6 @@ function App() {
     () => libraryInstallList.filter((install) => ["resolving", "downloading", "installing"].includes(install.status)),
     [libraryInstallList],
   );
-  const failedCurrentLibraries = useMemo(() => {
-    const currentHeaders = new Set(includedHeaders.map((header) => header.toLowerCase()));
-    return libraryInstallList.filter(
-      (install) => install.status === "failed" && currentHeaders.has(install.header.toLowerCase()),
-    );
-  }, [includedHeaders, libraryInstallList]);
-
   useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
@@ -406,15 +399,20 @@ function App() {
       appendLog(message, "system", "stderr");
       return { success: false, message };
     }
-    if (failedCurrentLibraries.length > 0) {
-      const names = failedCurrentLibraries.map((install) => install.package || install.header).join(", ");
-      const message = `Cannot compile because library installation failed: ${names}. Open the package bar and retry.`;
-      appendLog(message, "system", "stderr");
-      return { success: false, message };
-    }
     if (!selectedBoard) {
       appendLog("Select a connected board before compiling.", "system", "stderr");
       return { success: false, message: "Compile could not start because no board is selected." };
+    }
+    if (includedHeaders.length > 0) {
+      try {
+        await invoke("sync_libraries", {
+          headers: includedHeaders,
+          fqbn: selectedBoard.fqbn,
+          retry: false,
+        });
+      } catch (error) {
+        appendLog(`Library preflight failed: ${errorMessage(error)}`, "library", "stderr");
+      }
     }
     setOperation("compile");
     setCompileSucceeded(false);
@@ -427,6 +425,24 @@ function App() {
       });
       setCompileSucceeded(result.success);
       compileSucceededRef.current = result.success;
+      if (!result.success && result.missingHeader) {
+        const header = result.missingHeader;
+        appendLog(
+          `Missing header ${header}. Trace can try to install a matching Arduino library from the package bar.`,
+          "library",
+          "stderr",
+        );
+        setLibraryInstalls((installs) => ({
+          ...installs,
+          [header]: {
+            header,
+            package: installs[header]?.package ?? "",
+            status: "failed",
+            progress: 100,
+            message: "Header missing during compile. Click Install to search Arduino Library Manager.",
+          },
+        }));
+      }
       appendLog(
         result.success ? "Compile finished successfully." : `Compile failed (exit ${result.exitCode ?? "unknown"}).`,
         "compile",
@@ -567,6 +583,8 @@ function App() {
       fqbn: selectedBoard.fqbn,
       retry: true,
     }).catch((error) => {
+      const message = errorMessage(error);
+      appendLog(`Library install failed for ${header}: ${message}`, "library", "stderr");
       setLibraryInstalls((installs) => ({
         ...installs,
         [header]: {
@@ -574,7 +592,7 @@ function App() {
           package: current?.package ?? "",
           status: "failed",
           progress: 100,
-          message: errorMessage(error),
+          message,
         },
       }));
     });

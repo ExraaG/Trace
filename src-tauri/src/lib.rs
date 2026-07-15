@@ -92,6 +92,7 @@ struct Board {
 struct OperationResult {
     success: bool,
     exit_code: Option<i32>,
+    missing_header: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -326,6 +327,27 @@ where
     captured
 }
 
+fn missing_header_from_output(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let lower = line.to_ascii_lowercase();
+        let Some(error_start) = lower.find("fatal error:") else {
+            continue;
+        };
+        let value_start = error_start + "fatal error:".len();
+        let remainder = line[value_start..].trim();
+        let remainder_lower = remainder.to_ascii_lowercase();
+        for marker in [": no such file or directory", ": file not found"] {
+            if let Some(end) = remainder_lower.find(marker) {
+                let header = remainder[..end].trim().trim_matches(['<', '>', '"', '\'']);
+                if !header.is_empty() {
+                    return Some(header.to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
 async fn run_tool(
     app: AppHandle,
     state: State<'_, ToolState>,
@@ -361,9 +383,13 @@ async fn run_tool(
     let (stdout_text, stderr_text) = tokio::join!(stdout_task, stderr_task);
     let stdout_text = stdout_text.unwrap_or_default();
     let stderr_text = stderr_text.unwrap_or_default();
+    let combined_output = format!("{stdout_text}\n{stderr_text}");
+    let missing_header = (!status.success())
+        .then(|| missing_header_from_output(&combined_output))
+        .flatten();
 
     if !status.success() {
-        let lower = format!("{stdout_text}\n{stderr_text}").to_ascii_lowercase();
+        let lower = combined_output.to_ascii_lowercase();
         let hint = if lower.contains("access is denied") || lower.contains("permission denied") {
             Some("Serial port permission denied. On Linux, add your user to the port's dialout or uucp group, then sign out and back in.")
         } else if lower.contains("resource busy") || lower.contains("device or resource busy") {
@@ -386,6 +412,7 @@ async fn run_tool(
     Ok(OperationResult {
         success: status.success(),
         exit_code: status.code(),
+        missing_header,
     })
 }
 
@@ -408,6 +435,17 @@ fn emit_library_status(
             status,
             progress,
             message,
+        },
+    );
+}
+
+fn emit_tool_line(app: &AppHandle, operation: &'static str, stream: &'static str, line: &str) {
+    let _ = app.emit(
+        "tool-output",
+        ToolOutput {
+            operation,
+            stream,
+            line,
         },
     );
 }
@@ -597,16 +635,35 @@ async fn install_library_package(
         "Downloading package and dependencies…",
     );
     let command = arduino_cli_path();
-    let mut process = Command::new(&command);
-    process
+    emit_tool_line(
+        app,
+        "library",
+        "system",
+        &format!("Installing {package} for {header}…"),
+    );
+    let mut child = Command::new(&command)
         .args(["lib", "install", package, "--no-color"])
-        .kill_on_drop(true);
-    let output = process.output();
-    tokio::pin!(output);
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| friendly_command_error(&command, error))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Could not capture Arduino library installer output.")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("Could not capture Arduino library installer errors.")?;
+    let stdout_task = tokio::spawn(stream_pipe(stdout, app.clone(), "library", "stdout"));
+    let stderr_task = tokio::spawn(stream_pipe(stderr, app.clone(), "library", "stderr"));
+    let wait = child.wait();
+    tokio::pin!(wait);
     let mut progress = 35_u8;
-    let result = loop {
+    let status = loop {
         tokio::select! {
-            output = &mut output => break output.map_err(|error| friendly_command_error(&command, error))?,
+            result = &mut wait => break result.map_err(|error| format!("Arduino library installer stopped unexpectedly: {error}"))?,
             _ = tokio::time::sleep(Duration::from_millis(450)) => {
                 progress = (progress + 6).min(88);
                 let (status, message) = if progress < 58 {
@@ -618,15 +675,18 @@ async fn install_library_package(
             }
         }
     };
+    let (stdout_text, stderr_text) = tokio::join!(stdout_task, stderr_task);
+    let stdout_text = stdout_text.unwrap_or_default();
+    let stderr_text = stderr_text.unwrap_or_default();
 
-    if result.status.success() {
+    if status.success() {
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&result.stderr).trim().to_owned();
-        let stdout = String::from_utf8_lossy(&result.stdout).trim().to_owned();
+        let stderr = stderr_text.trim().to_owned();
+        let stdout = stdout_text.trim().to_owned();
         let detail = if stderr.is_empty() { stdout } else { stderr };
         Err(if detail.is_empty() {
-            format!("arduino-cli exited with {}", result.status)
+            format!("arduino-cli exited with {status}")
         } else {
             detail.lines().last().unwrap_or(&detail).to_owned()
         })
@@ -648,6 +708,12 @@ async fn process_library_queue(app: AppHandle, fqbn: String, headers: Vec<String
     let (mut installed_headers, mut installed_packages) = match list_result {
         Ok(value) => installed_library_index(&value),
         Err(error) => {
+            emit_tool_line(
+                &app,
+                "library",
+                "stderr",
+                &format!("Library list failed: {error}"),
+            );
             for header in headers {
                 emit_library_status(&app, &header, "", "failed", 100, &error);
             }
@@ -699,17 +765,20 @@ async fn process_library_queue(app: AppHandle, fqbn: String, headers: Vec<String
         let package = match resolve_library_package(&header).await {
             Ok(Some(package)) => package,
             Ok(None) => {
-                emit_library_status(
-                    &app,
-                    &header,
-                    "",
-                    "failed",
-                    100,
-                    "No matching package was found in Arduino Library Manager.",
+                let message = format!(
+                    "No confident Arduino Library Manager match for {header}. Check the library name and install it manually."
                 );
+                emit_tool_line(&app, "library", "stderr", &message);
+                emit_library_status(&app, &header, "", "failed", 100, &message);
                 continue;
             }
             Err(error) => {
+                emit_tool_line(
+                    &app,
+                    "library",
+                    "stderr",
+                    &format!("Library search failed for {header}: {error}"),
+                );
                 emit_library_status(&app, &header, "", "failed", 100, &error);
                 continue;
             }
@@ -749,38 +818,39 @@ async fn process_library_queue(app: AppHandle, fqbn: String, headers: Vec<String
 }
 
 #[tauri::command]
-fn sync_libraries(
+async fn sync_libraries(
     app: AppHandle,
     state: State<'_, LibraryState>,
     headers: Vec<String>,
     fqbn: String,
     retry: bool,
 ) -> Result<(), String> {
-    let mut statuses = state
-        .statuses
-        .lock()
-        .map_err(|_| "Library state lock was poisoned.".to_owned())?;
-    let mut pending = Vec::new();
-    let mut seen = HashSet::new();
-    for header in headers {
-        let header = header.trim().replace('\\', "/");
-        if header.is_empty()
-            || header.len() > 160
-            || header.contains("..")
-            || !seen.insert(header.to_ascii_lowercase())
-        {
-            continue;
+    let pending = {
+        let mut statuses = state
+            .statuses
+            .lock()
+            .map_err(|_| "Library state lock was poisoned.".to_owned())?;
+        let mut pending = Vec::new();
+        let mut seen = HashSet::new();
+        for header in headers {
+            let header = header.trim().replace('\\', "/");
+            if header.is_empty()
+                || header.len() > 160
+                || header.contains("..")
+                || !seen.insert(header.to_ascii_lowercase())
+            {
+                continue;
+            }
+            if !statuses.contains_key(&header) || retry {
+                statuses.insert(header.clone(), "checking".to_owned());
+                pending.push(header);
+            }
         }
-        let may_retry = retry && statuses.get(&header).is_some_and(|value| value == "failed");
-        if !statuses.contains_key(&header) || may_retry {
-            statuses.insert(header.clone(), "checking".to_owned());
-            pending.push(header);
-        }
-    }
-    drop(statuses);
+        pending
+    };
 
     if !pending.is_empty() {
-        tauri::async_runtime::spawn(process_library_queue(app, fqbn, pending));
+        process_library_queue(app, fqbn, pending).await;
     }
     Ok(())
 }
@@ -1691,6 +1761,16 @@ mod tests {
         assert_eq!(
             fs::read_to_string(staged_file).unwrap(),
             "void setup() {}\nvoid loop() {}\n"
+        );
+    }
+
+    #[test]
+    fn extracts_missing_header_from_compiler_output() {
+        assert_eq!(
+            missing_header_from_output(
+                "TraceSketch.ino:2:10: fatal error: Adafruit_SSD1306.h: No such file or directory"
+            ),
+            Some("Adafruit_SSD1306.h".to_owned())
         );
     }
 
