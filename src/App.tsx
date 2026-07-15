@@ -138,6 +138,7 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [closeWarningOpen, setCloseWarningOpen] = useState(false);
   const [boardError, setBoardError] = useState<string | null>(null);
   const [showStartup, setShowStartup] = useState(true);
   const [explainPrompt, setExplainPrompt] = useState<string | null>(null);
@@ -198,20 +199,10 @@ function App() {
   useEffect(() => {
     let disposed = false;
     let stopListening: (() => void) | undefined;
-    void getCurrentWindow().onCloseRequested(async (event) => {
+    void getCurrentWindow().onCloseRequested((event) => {
       if (closeApprovedRef.current || (!dirtyRef.current && filePathRef.current !== null)) return;
       event.preventDefault();
-      const prompt = "Your sketch has unsaved changes. Close Trace and discard them?";
-      const shouldClose = await confirm(prompt, {
-        title: "Discard Changes",
-        kind: "warning",
-        okLabel: "Discard and close",
-        cancelLabel: "Keep editing",
-      }).catch(() => window.confirm(prompt));
-      if (shouldClose) {
-        closeApprovedRef.current = true;
-        await invoke("quit_app");
-      }
+      setCloseWarningOpen(true);
     }).then((unlisten) => {
       if (disposed) unlisten();
       else stopListening = unlisten;
@@ -220,6 +211,17 @@ function App() {
       disposed = true;
       stopListening?.();
     };
+  }, []);
+
+  const discardAndClose = useCallback(async () => {
+    setCloseWarningOpen(false);
+    closeApprovedRef.current = true;
+    try {
+      await invoke("quit_app");
+    } catch {
+      closeApprovedRef.current = false;
+      setCloseWarningOpen(true);
+    }
   }, []);
 
   const appendLog = useCallback(
@@ -1028,6 +1030,26 @@ function App() {
           onDisable={disableAi}
           onClose={() => setSettingsOpen(false)}
         />
+      )}
+
+      {closeWarningOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal-card max-w-md" role="alertdialog" aria-modal="true" aria-labelledby="discard-changes-title" aria-describedby="discard-changes-description">
+            <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl bg-amber-500/10 text-amber-300">
+              <AlertTriangle size={20} />
+            </div>
+            <h2 id="discard-changes-title" className="text-lg font-semibold text-zinc-100">Discard Changes</h2>
+            <p id="discard-changes-description" className="mt-2 text-sm leading-6 text-zinc-400">
+              Your sketch has unsaved changes. Close Trace and discard them?
+            </p>
+            <div className="mt-6 flex justify-end gap-2">
+              <button className="toolbar-button" onClick={() => void discardAndClose()}>Discard and close</button>
+              <button className="action-button border border-zinc-600 bg-zinc-100 text-zinc-950 hover:bg-white" onClick={() => setCloseWarningOpen(false)} autoFocus>
+                Keep editing
+              </button>
+            </div>
+          </section>
+        </div>
       )}
     </main>
   );
