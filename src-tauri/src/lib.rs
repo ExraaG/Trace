@@ -3,7 +3,9 @@ use serde_json::{json, Value};
 use serialport::SerialPort;
 use std::{
     collections::{HashMap, HashSet},
-    env, fs,
+    env,
+    ffi::{OsStr, OsString},
+    fs,
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Stdio,
@@ -56,6 +58,51 @@ fn arduino_cli_path() -> PathBuf {
     }
 
     PathBuf::from(arduino_cli_binary_name())
+}
+
+fn path_without_app_dir(value: &OsStr, app_dir: &Path) -> Option<OsString> {
+    let paths = env::split_paths(value)
+        .filter(|path| !path.as_os_str().is_empty() && !path.starts_with(app_dir));
+    env::join_paths(paths)
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+fn arduino_cli_command(path: &Path) -> Command {
+    let mut command = Command::new(path);
+
+    // AppImage launchers may provide a bundled Python environment for their own
+    // runtime. ESP32 tools also use Python and must never inherit that runtime.
+    for variable in [
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONUSERBASE",
+        "PYTHONEXECUTABLE",
+        "PYTHONPLATLIBDIR",
+        "_PYTHON_SYSCONFIGDATA_NAME",
+    ] {
+        command.env_remove(variable);
+    }
+
+    // Keep AppImage libraries and executables available to Trace itself, but do
+    // not leak them into arduino-cli or the compiler/upload tools it launches.
+    if let Some(app_dir) = env::var_os("APPDIR").map(PathBuf::from) {
+        command.env_remove("LD_LIBRARY_PATH");
+        command.env_remove("LD_PRELOAD");
+        if let Some(path) = env::var_os("PATH") {
+            match path_without_app_dir(&path, &app_dir) {
+                Some(path) => {
+                    command.env("PATH", path);
+                }
+                None => {
+                    command.env_remove("PATH");
+                }
+            }
+        }
+    }
+
+    command
 }
 
 fn stage_sketch_source(sketch_code: &str) -> Result<String, String> {
@@ -408,7 +455,7 @@ fn parse_board_list(bytes: &[u8]) -> Result<Vec<Board>, String> {
 #[tauri::command]
 async fn list_boards() -> Result<Vec<Board>, String> {
     let command = arduino_cli_path();
-    let output = Command::new(&command)
+    let output = arduino_cli_command(&command)
         .args(["board", "list", "--json"])
         .output()
         .await
@@ -502,7 +549,7 @@ async fn run_tool(
         .try_lock()
         .map_err(|_| "Another compile or upload is already running.".to_owned())?;
     let command = arduino_cli_path();
-    let mut child = Command::new(&command)
+    let mut child = arduino_cli_command(&command)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -751,7 +798,7 @@ fn library_search_terms(header: &str) -> Vec<String> {
 
 async fn run_arduino_cli_json(args: &[String]) -> Result<Value, String> {
     let command = arduino_cli_path();
-    let mut process = Command::new(&command);
+    let mut process = arduino_cli_command(&command);
     process.args(args).kill_on_drop(true);
     let output = process
         .output()
@@ -854,7 +901,7 @@ async fn install_library_package(
         "system",
         &format!("Installing {package} for {header}…"),
     );
-    let mut child = Command::new(&command)
+    let mut child = arduino_cli_command(&command)
         .args(["lib", "install", package, "--no-color"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1950,6 +1997,32 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removes_appimage_directories_from_external_tool_path() {
+        let app_dir = PathBuf::from("/tmp/trace-appdir");
+        let original = env::join_paths([
+            app_dir.join("usr/bin"),
+            PathBuf::from("/home/test/.trace/bin"),
+            app_dir.join("bin"),
+            PathBuf::from("/usr/bin"),
+        ])
+        .unwrap();
+        let cleaned = path_without_app_dir(&original, &app_dir).unwrap();
+
+        assert_eq!(
+            env::split_paths(&cleaned).collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("/home/test/.trace/bin"),
+                PathBuf::from("/usr/bin")
+            ]
+        );
+        assert!(path_without_app_dir(
+            &env::join_paths([app_dir.join("usr/bin")]).unwrap(),
+            &app_dir
+        )
+        .is_none());
+    }
 
     #[test]
     fn indexes_headers_provided_by_installed_libraries() {
