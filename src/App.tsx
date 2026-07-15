@@ -203,7 +203,7 @@ function App() {
       event.preventDefault();
       const prompt = "Your sketch has unsaved changes. Close Trace and discard them?";
       const shouldClose = await confirm(prompt, {
-        title: "Unsaved changes",
+        title: "Trace",
         kind: "warning",
         okLabel: "Discard and close",
         cancelLabel: "Keep editing",
