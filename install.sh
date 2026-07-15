@@ -118,6 +118,7 @@ install_linux() {
     '#!/bin/sh' \
     "export PATH=\"$CLI_DIR:\$PATH\"" \
     'export APPIMAGE_EXTRACT_AND_RUN=1' \
+    'export WEBKIT_DISABLE_DMABUF_RENDERER=1' \
     "exec \"$appimage\" \"\$@\"" > "$launcher"
   chmod 0755 "$launcher"
 
