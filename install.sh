@@ -51,7 +51,7 @@ ASSET_URLS="$(printf '%s\n' "$RELEASE_JSON" | sed -n 's/.*"browser_download_url"
 find_asset() {
   extension="$1"
   architecture="$2"
-  printf '%s\n' "$ASSET_URLS" | grep -Ei "$architecture.*\\.$extension$" | head -n 1 || true
+  printf '%s\n' "$ASSET_URLS" | grep -Ei "($architecture).*\\.$extension$" | head -n 1 || true
 }
 
 install_arduino() {
