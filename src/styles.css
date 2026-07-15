@@ -69,8 +69,8 @@
 .startup-trace-white {
   stroke: #fafafa;
   stroke-linecap: butt;
-  stroke-dasharray: 212;
-  stroke-dashoffset: 212;
+  stroke-dasharray: 164;
+  stroke-dashoffset: 164;
   animation: startup-draw-white 420ms 380ms ease-out forwards;
 }
 
