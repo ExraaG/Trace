@@ -1,6 +1,6 @@
 # Trace
 
-Trace is a focused desktop IDE for ESP32 and Arduino development. It provides a modern editor, live build output, automatic library installation, upload controls, and a serial console while leaving the actual toolchain work to `arduino-cli`.
+Trace is a focused desktop IDE for ESP32 and Arduino development. It provides a modern code editor, a beginner-friendly visual block editor, live build output, automatic library installation, upload controls, and a serial console while leaving the actual toolchain work to `arduino-cli`.
 
 Trace deliberately keeps the workflow small: open or write one `.ino` sketch, choose an ESP32, compile, upload, and inspect serial data. There is no project tree or board-package manager to get between you and the board.
 
@@ -24,7 +24,7 @@ Want to inspect a script before running it? Open [`install.sh`](install.sh) or [
 
 The Linux installer places a self-contained AppImage and application-menu entry in your home directory. The macOS installer copies Trace to `~/Applications`, and the Windows installer runs the native Trace setup package. A board-specific USB driver may still be required on Windows or macOS. Linux users may need serial-device permission through their distribution's `dialout` or `uucp` group.
 
-The first release is not code-signed. Windows SmartScreen or macOS Gatekeeper may ask you to confirm that you want to open Trace. Only accept that prompt when you downloaded Trace from this repository's official release page.
+Current builds are not code-signed. Windows SmartScreen or macOS Gatekeeper may ask you to confirm that you want to open Trace. Only accept that prompt when you downloaded Trace from this repository's official release page.
 
 ## Prerequisites
 
@@ -88,8 +88,8 @@ The release workflow builds an x86_64 Linux AppImage and DEB, Intel and Apple Si
 When version numbers in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` match, publish with:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 GitHub Actions creates the release and uploads all platform installers. Once that workflow finishes, the one-command installers above use the newest published release automatically.
@@ -97,7 +97,7 @@ GitHub Actions creates the release and uploads all platform installers. Once tha
 ## Using Trace
 
 1. Connect an ESP32 over USB and select its name and port in the toolbar. Use refresh if it was connected after Trace opened.
-2. Open an existing `.ino` file or edit the starter sketch. Saving is optional for compilation.
+2. Open an existing `.ino` file or edit the starter sketch. Saving is optional for compilation. Select **Blocks** beside **Code** above the editor to build a sketch visually; connected blocks generate the same `.ino` buffer used by compile and upload.
 3. Select **Compile**. Trace compiles the current editor buffer and streams `arduino-cli` output into the build panel.
 4. After a successful compile, select **Upload**. Upload remains disabled until that session has a successful, current compile.
 5. Connect the serial console, select a baud rate (115200 by default), and send or receive newline-delimited data.
