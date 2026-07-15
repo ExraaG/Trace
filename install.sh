@@ -22,6 +22,10 @@ info() {
   printf '\nTrace: %s\n' "$1"
 }
 
+warn() {
+  printf '\nTrace installer warning: %s\n' "$1" >&2
+}
+
 fail() {
   printf '\nTrace installer error: %s\n' "$1" >&2
   exit 1
@@ -101,7 +105,8 @@ install_linux() {
   launcher_dir="$HOME/.local/bin"
   appimage="$app_dir/Trace.AppImage"
   launcher="$launcher_dir/trace"
-  icon_dir="$HOME/.local/share/icons/hicolor/512x512/apps"
+  icon_root="$HOME/.local/share/icons/hicolor"
+  icon_dir="$icon_root/256x256/apps"
   desktop_dir="$HOME/.local/share/applications"
   mkdir -p "$app_dir" "$launcher_dir" "$icon_dir" "$desktop_dir"
 
@@ -116,9 +121,14 @@ install_linux() {
     "exec \"$appimage\" \"\$@\"" > "$launcher"
   chmod 0755 "$launcher"
 
-  curl -fsSL --retry 3 \
-    "https://raw.githubusercontent.com/$REPOSITORY/main/src-tauri/icons/icon.png" \
-    -o "$icon_dir/trace.png" || true
+  icon_extract="$TEMP_DIR/trace-icon"
+  mkdir -p "$icon_extract"
+  if (cd "$icon_extract" && "$appimage" --appimage-extract Trace.png >/dev/null 2>&1) \
+    && [ -f "$icon_extract/squashfs-root/Trace.png" ]; then
+    install -m 0644 "$icon_extract/squashfs-root/Trace.png" "$icon_dir/trace.png"
+  else
+    warn "Could not extract the desktop icon from the AppImage. Trace will still run."
+  fi
 
   printf '%s\n' \
     '[Desktop Entry]' \
@@ -128,7 +138,12 @@ install_linux() {
     "Exec=$launcher" \
     'Icon=trace' \
     'Terminal=false' \
-    'Categories=Development;IDE;' > "$desktop_dir/dev.trace.ide.desktop"
+    'Categories=Development;IDE;' \
+    'StartupWMClass=trace' \
+    'StartupNotify=true' > "$desktop_dir/trace.desktop"
+  rm -f "$desktop_dir/dev.trace.ide.desktop"
+  command -v gtk-update-icon-cache >/dev/null 2>&1 \
+    && gtk-update-icon-cache -f -t "$icon_root" >/dev/null 2>&1 || true
   command -v update-desktop-database >/dev/null 2>&1 \
     && update-desktop-database "$desktop_dir" >/dev/null 2>&1 || true
   add_launcher_to_path "$launcher_dir"
