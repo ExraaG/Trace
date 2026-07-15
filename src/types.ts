@@ -7,6 +7,38 @@ export interface Board {
   vid: string;
   pid: string;
   identityKey: string;
+  candidates: InstalledBoard[];
+}
+
+export interface InstalledBoard {
+  name: string;
+  fqbn: string;
+}
+
+export interface BoardMenuValue {
+  value: string;
+  label: string;
+  selected: boolean;
+}
+
+export interface BoardMenu {
+  option: string;
+  label: string;
+  values: BoardMenuValue[];
+  selected: string | null;
+  requiresSelection: boolean;
+}
+
+export interface BoardConfiguration {
+  name: string;
+  fqbn: string;
+  platformPackage: string;
+  platformArchitecture: string;
+  platformVersion: string;
+  platformPath: string;
+  boardsFile: string;
+  menus: BoardMenu[];
+  requiresSelection: string[];
 }
 
 export type Operation = "compile" | "upload" | "library";
@@ -95,5 +127,6 @@ export interface AppSettings {
   customProviderModel: string;
   serialTimestamps: boolean;
   boardTypeOverrides: Record<string, string>;
+  boardOptionSelections: Record<string, Record<string, string>>;
   layout: PanelLayout;
 }

@@ -45,6 +45,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customProviderModel: "local-model",
   serialTimestamps: false,
   boardTypeOverrides: {},
+  boardOptionSelections: {},
   layout: PRESET_LAYOUTS.debug,
 };
 
@@ -98,8 +99,18 @@ function mergeSettings(value: Partial<AppSettings> | null | undefined): AppSetti
     serialTimestamps: typeof value.serialTimestamps === "boolean" ? value.serialTimestamps : false,
     boardTypeOverrides: Object.fromEntries(
       Object.entries(value.boardTypeOverrides ?? {}).filter(
-        ([key, fqbn]) => key.trim() && typeof fqbn === "string" && fqbn.startsWith("esp32:esp32:"),
+        ([key, fqbn]) => key.trim() && typeof fqbn === "string" && fqbn.split(":").length >= 3,
       ),
+    ),
+    boardOptionSelections: Object.fromEntries(
+      Object.entries(value.boardOptionSelections ?? {}).filter(
+        ([fqbn, options]) => fqbn.split(":").length >= 3 && options && typeof options === "object",
+      ).map(([fqbn, options]) => [
+        fqbn,
+        Object.fromEntries(Object.entries(options).filter(
+          ([option, selected]) => option.trim() && typeof selected === "string" && selected.trim(),
+        )),
+      ]),
     ),
     layout: {
       preset: PRESET_IDS.includes(layout?.preset as LayoutPreset) ? layout!.preset : DEFAULT_SETTINGS.layout.preset,

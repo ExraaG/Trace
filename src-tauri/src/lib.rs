@@ -19,7 +19,6 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tokio::{io::AsyncBufReadExt, process::Command, sync::Mutex as AsyncMutex};
 
-const DEFAULT_ESP32_FQBN: &str = "esp32:esp32:esp32";
 const STAGED_SKETCH_NAME: &str = "TraceSketch";
 const AI_SYSTEM_PROMPT: &str = "You are the optional Trace IDE assistant. Help with ESP32, Arduino, C++, build errors, uploads, and embedded debugging. Be concise, practical, and explicit when uncertain. Prefer the smallest safe fix. You only know code or logs the user deliberately includes in chat. When a request includes <trace-current-code> and asks you to write or change the open sketch, return the complete replacement sketch inside exactly one <trace-code>...</trace-code> block. Never put partial code in that block.";
 
@@ -115,6 +114,15 @@ fn stage_sketch_source(sketch_code: &str) -> Result<String, String> {
             sketch_dir.display()
         )
     })?;
+    let staged_partition = sketch_dir.join("partitions.csv");
+    if staged_partition.exists() {
+        fs::remove_file(&staged_partition).map_err(|error| {
+            format!(
+                "Could not reset temporary partition file {}: {error}",
+                staged_partition.display()
+            )
+        })?;
+    }
     let staged_file = sketch_dir.join(format!("{STAGED_SKETCH_NAME}.ino"));
     fs::write(&staged_file, sketch_code).map_err(|error| {
         format!(
@@ -128,6 +136,13 @@ fn stage_sketch_source(sketch_code: &str) -> Result<String, String> {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+struct BoardCandidate {
+    name: String,
+    fqbn: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 struct Board {
     name: String,
     port: String,
@@ -137,6 +152,46 @@ struct Board {
     vid: String,
     pid: String,
     identity_key: String,
+    candidates: Vec<BoardCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstalledBoard {
+    name: String,
+    fqbn: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardMenuValue {
+    value: String,
+    label: String,
+    selected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardMenu {
+    option: String,
+    label: String,
+    values: Vec<BoardMenuValue>,
+    selected: Option<String>,
+    requires_selection: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardConfiguration {
+    name: String,
+    fqbn: String,
+    platform_package: String,
+    platform_architecture: String,
+    platform_version: String,
+    platform_path: String,
+    boards_file: String,
+    menus: Vec<BoardMenu>,
+    requires_selection: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -258,6 +313,8 @@ struct DetectedBoard {
     name: String,
     #[serde(default)]
     fqbn: String,
+    #[serde(default)]
+    is_hidden: bool,
 }
 
 fn friendly_command_error(command: &Path, error: std::io::Error) -> String {
@@ -273,6 +330,22 @@ fn friendly_command_error(command: &Path, error: std::io::Error) -> String {
 
 fn contains_any(value: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| value.contains(needle))
+}
+
+fn is_template_board(name: &str, fqbn: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    let board_id = fqbn
+        .rsplit(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    contains_any(
+        &name,
+        &["family device", "template board", "board template"],
+    ) || board_id == "family"
+        || board_id.ends_with("_family")
+        || board_id.ends_with("-family")
+        || board_id.contains("template")
 }
 
 fn parse_board_list(bytes: &[u8]) -> Result<Vec<Board>, String> {
@@ -294,17 +367,23 @@ fn parse_board_list(bytes: &[u8]) -> Result<Vec<Board>, String> {
         if address.is_empty() {
             continue;
         }
-        let esp32 = port
+        let mut candidates = port
             .boards
             .iter()
-            .find(|board| board.fqbn.starts_with("esp32:esp32:"));
-        // A board explicitly identified as another Arduino family must not be
-        // offered as an ESP32 target. Unknown USB-UART bridges remain usable
-        // because many inexpensive ESP32 boards do not report an FQBN.
-        if esp32.is_none() && !port.boards.is_empty() {
-            continue;
-        }
-        let matched = esp32.is_some();
+            .filter(|board| {
+                !board.is_hidden
+                    && !board.fqbn.trim().is_empty()
+                    && !is_template_board(&board.name, &board.fqbn)
+            })
+            .map(|board| BoardCandidate {
+                name: board.name.trim().to_owned(),
+                fqbn: board.fqbn.trim().to_owned(),
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| left.name.cmp(&right.name));
+        candidates.dedup_by(|left, right| left.fqbn == right.fqbn);
+        let has_candidates = !candidates.is_empty();
+        let matched = candidates.len() == 1;
         let details = port.port.as_ref();
         let properties = details
             .map(|value| &value.properties)
@@ -356,7 +435,7 @@ fn parse_board_list(bytes: &[u8]) -> Result<Vec<Board>, String> {
                 "z-wave",
             ],
         );
-        if !matched && unrelated_device {
+        if !has_candidates && unrelated_device {
             continue;
         }
         let usb_path = {
@@ -391,18 +470,22 @@ fn parse_board_list(bytes: &[u8]) -> Result<Vec<Board>, String> {
             || identity_text.contains("usb serial");
         let windows_usb_port =
             cfg!(windows) && address.to_ascii_lowercase().starts_with("com") && has_usb_identity;
-        if !matched && !(usb_path || bridge_hint || windows_usb_port) {
+        if !has_candidates && !(usb_path || bridge_hint || windows_usb_port) {
             continue;
         }
 
-        let name = esp32
-            .map(|board| board.name.clone())
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| "Possible ESP32 board".to_owned());
-        let fqbn = esp32
-            .map(|board| board.fqbn.clone())
-            .filter(|fqbn| !fqbn.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_ESP32_FQBN.to_owned());
+        let name = if matched {
+            candidates[0].name.clone()
+        } else if candidates.len() > 1 {
+            "Multiple compatible boards".to_owned()
+        } else {
+            "Unidentified Arduino-compatible board".to_owned()
+        };
+        let fqbn = if matched {
+            candidates[0].fqbn.clone()
+        } else {
+            String::new()
+        };
         let product_lower = product.to_ascii_lowercase();
         let usb_label = if product_lower.contains("cp2102") {
             "CP2102".to_owned()
@@ -441,6 +524,7 @@ fn parse_board_list(bytes: &[u8]) -> Result<Vec<Board>, String> {
             vid,
             pid,
             identity_key,
+            candidates,
         });
     }
     result.sort_by(|left, right| {
@@ -813,7 +897,224 @@ async fn run_arduino_cli_json(args: &[String]) -> Result<Value, String> {
         });
     }
     serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("Could not read arduino-cli library data: {error}"))
+        .map_err(|error| format!("Could not read Arduino CLI JSON data: {error}"))
+}
+
+fn board_option_arguments(options: &HashMap<String, String>) -> Vec<String> {
+    if options.is_empty() {
+        return Vec::new();
+    }
+    let mut options = options
+        .iter()
+        .map(|(option, value)| format!("{option}={value}"))
+        .collect::<Vec<_>>();
+    options.sort_unstable();
+    vec!["--board-options".to_owned(), options.join(",")]
+}
+
+async fn load_board_details(
+    fqbn: &str,
+    options: &HashMap<String, String>,
+) -> Result<Value, String> {
+    let identity = fqbn.split(':').take(3).collect::<Vec<_>>();
+    if identity.len() != 3 || identity.iter().any(|part| part.trim().is_empty()) {
+        return Err("Choose a concrete installed board before compiling.".to_owned());
+    }
+    let mut args = vec![
+        "board".to_owned(),
+        "details".to_owned(),
+        "--fqbn".to_owned(),
+        fqbn.to_owned(),
+        "--full".to_owned(),
+        "--show-properties=expanded".to_owned(),
+        "--json".to_owned(),
+    ];
+    args.extend(board_option_arguments(options));
+    run_arduino_cli_json(&args)
+        .await
+        .map_err(|error| format!("Could not resolve board configuration for {fqbn}: {error}"))
+}
+
+fn properties_from_json(value: &Value) -> HashMap<String, String> {
+    value
+        .get("build_properties")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect()
+}
+
+fn properties_from_text(text: &str) -> HashMap<String, String> {
+    text.lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect()
+}
+
+fn board_configuration_from_details(value: &Value) -> Result<BoardConfiguration, String> {
+    let fqbn = value
+        .get("fqbn")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(&fqbn)
+        .to_owned();
+    if is_template_board(&name, &fqbn) {
+        return Err(format!(
+            "{name} is a generic/template board and cannot be compiled directly. Choose a concrete board model."
+        ));
+    }
+    let properties = properties_from_json(value);
+    let platform_path = properties
+        .get("runtime.platform.path")
+        .or_else(|| properties.get("build.board.platform.path"))
+        .cloned()
+        .unwrap_or_default();
+    let platform_package = fqbn.split(':').next().unwrap_or("unknown").to_owned();
+    let platform_architecture = value
+        .pointer("/platform/architecture")
+        .and_then(Value::as_str)
+        .or_else(|| fqbn.split(':').nth(1))
+        .unwrap_or("unknown")
+        .to_owned();
+    let platform_version = value
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+    let boards_file = if platform_path.is_empty() {
+        "boards.txt".to_owned()
+    } else {
+        Path::new(&platform_path)
+            .join("boards.txt")
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    let menus = value
+        .get("config_options")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|menu| {
+            let option = menu
+                .get("option")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let label = menu
+                .get("option_label")
+                .and_then(Value::as_str)
+                .unwrap_or(&option)
+                .to_owned();
+            let values = menu
+                .get("values")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|entry| BoardMenuValue {
+                    value: entry
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    label: entry
+                        .get("value_label")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    selected: entry
+                        .get("selected")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                })
+                .collect::<Vec<_>>();
+            let selected = values
+                .iter()
+                .find(|entry| entry.selected)
+                .map(|entry| entry.value.clone());
+            let requires_selection = selected.is_none() && !values.is_empty();
+            BoardMenu {
+                option,
+                label,
+                values,
+                selected,
+                requires_selection,
+            }
+        })
+        .collect::<Vec<_>>();
+    let requires_selection = menus
+        .iter()
+        .filter(|menu| menu.requires_selection)
+        .map(|menu| menu.option.clone())
+        .collect();
+
+    Ok(BoardConfiguration {
+        name,
+        fqbn,
+        platform_package,
+        platform_architecture,
+        platform_version,
+        platform_path,
+        boards_file,
+        menus,
+        requires_selection,
+    })
+}
+
+#[tauri::command]
+async fn list_installed_boards() -> Result<Vec<InstalledBoard>, String> {
+    let value = run_arduino_cli_json(&[
+        "board".to_owned(),
+        "listall".to_owned(),
+        "--json".to_owned(),
+    ])
+    .await?;
+    let mut boards = value
+        .get("boards")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|board| {
+            !board
+                .get("is_hidden")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .filter_map(|board| {
+            let name = board.get("name")?.as_str()?.trim();
+            let fqbn = board.get("fqbn")?.as_str()?.trim();
+            (!name.is_empty() && !fqbn.is_empty() && !is_template_board(name, fqbn)).then(|| {
+                InstalledBoard {
+                    name: name.to_owned(),
+                    fqbn: fqbn.to_owned(),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    boards.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+            .then_with(|| left.fqbn.cmp(&right.fqbn))
+    });
+    boards.dedup_by(|left, right| left.fqbn == right.fqbn);
+    Ok(boards)
+}
+
+#[tauri::command]
+async fn get_board_configuration(
+    fqbn: String,
+    board_options: HashMap<String, String>,
+) -> Result<BoardConfiguration, String> {
+    let details = load_board_details(&fqbn, &board_options).await?;
+    board_configuration_from_details(&details)
 }
 
 async fn resolve_library_package(header: &str) -> Result<Option<String>, String> {
@@ -1145,6 +1446,283 @@ async fn sync_libraries(
     Ok(())
 }
 
+const GENERATED_COMMAND_VALUES: [&str; 6] = [
+    "source_file",
+    "object_file",
+    "object_files",
+    "archive_file",
+    "archive_file_path",
+    "includes",
+];
+
+fn innermost_placeholder(value: &str) -> Option<(usize, usize, &str)> {
+    let close = value.find('}')?;
+    let open = value[..close].rfind('{')?;
+    let property = &value[open + 1..close];
+    (!property.is_empty()).then_some((open, close + 1, property))
+}
+
+fn resolve_property(
+    property: &str,
+    properties: &HashMap<String, String>,
+    stack: &mut Vec<String>,
+) -> Result<String, String> {
+    if stack.iter().any(|entry| entry == property) {
+        return Err(property.to_owned());
+    }
+    let value = properties
+        .get(property)
+        .cloned()
+        .ok_or_else(|| property.to_owned())?;
+    stack.push(property.to_owned());
+    let result = resolve_placeholders_inner(&value, properties, stack);
+    stack.pop();
+    result
+}
+
+fn resolve_placeholders_inner(
+    value: &str,
+    properties: &HashMap<String, String>,
+    stack: &mut Vec<String>,
+) -> Result<String, String> {
+    let mut result = value.to_owned();
+    let mut expansions = 0;
+    while let Some((start, end, property)) = innermost_placeholder(&result) {
+        expansions += 1;
+        if expansions > 512 {
+            return Err(property.to_owned());
+        }
+        let replacement = resolve_property(property, properties, stack)?;
+        result.replace_range(start..end, &replacement);
+    }
+    Ok(result)
+}
+
+fn resolve_placeholders(
+    value: &str,
+    properties: &HashMap<String, String>,
+) -> Result<String, String> {
+    resolve_placeholders_inner(value, properties, &mut Vec::new())
+}
+
+fn configuration_file_for_property(property: &str, configuration: &BoardConfiguration) -> String {
+    if property.starts_with("build.")
+        || property.starts_with("upload.")
+        || property.starts_with("menu.")
+    {
+        configuration.boards_file.clone()
+    } else if configuration.platform_path.is_empty() {
+        "platform.txt".to_owned()
+    } else {
+        Path::new(&configuration.platform_path)
+            .join("platform.txt")
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+fn configuration_error(property: &str, configuration: &BoardConfiguration, detail: &str) -> String {
+    format!(
+        "Board configuration error: unresolved property {{{property}}} for {} ({}), platform {}:{} {}. {detail} Expected configuration in {}.",
+        configuration.name,
+        configuration.fqbn,
+        configuration.platform_package,
+        configuration.platform_architecture,
+        configuration.platform_version,
+        configuration_file_for_property(property, configuration),
+    )
+}
+
+fn validate_expanded_commands(
+    properties: &HashMap<String, String>,
+    configuration: &BoardConfiguration,
+) -> Result<(), String> {
+    let mut resolvable = properties.clone();
+    for property in GENERATED_COMMAND_VALUES {
+        resolvable.insert(property.to_owned(), format!("<generated:{property}>"));
+    }
+    for (key, command) in properties {
+        if !key.starts_with("recipe.") || !key.contains(".pattern") {
+            continue;
+        }
+        if let Err(property) = resolve_placeholders(command, &resolvable) {
+            return Err(configuration_error(
+                &property,
+                configuration,
+                &format!("The generated command property `{key}` is not safe to execute."),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn direct_partition_path(partition: &str, platform_path: &Path) -> Option<PathBuf> {
+    let path = Path::new(partition);
+    if path.is_absolute() {
+        Some(path.to_owned())
+    } else if path.extension().and_then(|value| value.to_str()) == Some("csv")
+        || path.components().count() > 1
+    {
+        Some(platform_path.join(path))
+    } else {
+        None
+    }
+}
+
+fn platform_partition_path(partition: &str, platform_path: &Path) -> PathBuf {
+    platform_path
+        .join("tools")
+        .join("partitions")
+        .join(format!("{partition}.csv"))
+}
+
+fn partition_recipe_is_used(properties: &HashMap<String, String>) -> bool {
+    properties.iter().any(|(key, value)| {
+        key.starts_with("recipe.")
+            && key.contains(".pattern")
+            && value.to_ascii_lowercase().contains("partition")
+            && value.to_ascii_lowercase().contains(".csv")
+    })
+}
+
+fn validate_partition_file(
+    properties: &HashMap<String, String>,
+    configuration: &BoardConfiguration,
+    staged_sketch: &Path,
+) -> Result<(), String> {
+    if !partition_recipe_is_used(properties) || staged_sketch.join("partitions.csv").is_file() {
+        return Ok(());
+    }
+    let Some(partition) = properties
+        .get("build.partitions")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let platform_path = Path::new(&configuration.platform_path);
+    let variant_partition = properties
+        .get("build.variant.path")
+        .map(PathBuf::from)
+        .filter(|path| path.join("partitions.csv").is_file());
+    let custom_variant_partition = properties
+        .get("build.custom_partitions")
+        .filter(|value| !value.trim().is_empty())
+        .and_then(|value| {
+            properties.get("build.variant.path").map(|path| {
+                Path::new(path).join(if value.ends_with(".csv") {
+                    value.clone()
+                } else {
+                    format!("{value}.csv")
+                })
+            })
+        })
+        .filter(|path| path.is_file());
+    if variant_partition.is_some() || custom_variant_partition.is_some() {
+        return Ok(());
+    }
+    let path = direct_partition_path(partition, platform_path)
+        .unwrap_or_else(|| platform_partition_path(partition, platform_path));
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Board configuration error: partition `{partition}` for {} ({}) does not exist at {}. Platform {}:{} {} defines this through build.partitions in {}.",
+            configuration.name,
+            configuration.fqbn,
+            path.display(),
+            configuration.platform_package,
+            configuration.platform_architecture,
+            configuration.platform_version,
+            configuration.boards_file,
+        ))
+    }
+}
+
+async fn preflight_board_configuration(
+    staged_sketch: &Path,
+    fqbn: &str,
+    board_options: &HashMap<String, String>,
+) -> Result<Vec<String>, String> {
+    let details = load_board_details(fqbn, board_options).await?;
+    let configuration = board_configuration_from_details(&details)?;
+    if !configuration.requires_selection.is_empty() {
+        return Err(format!(
+            "{} requires board option selection for: {}. Open Board options and choose a value before compiling.",
+            configuration.name,
+            configuration.requires_selection.join(", ")
+        ));
+    }
+
+    let details_properties = properties_from_json(&details);
+    let platform_path = Path::new(&configuration.platform_path);
+    let mut build_property_arguments = Vec::new();
+    if let Some(partition) = details_properties
+        .get("build.partitions")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(path) = direct_partition_path(partition, platform_path) {
+            if !path.is_file() {
+                return Err(format!(
+                    "Board configuration error: partition file `{}` for {} ({}) does not exist. Check build.partitions in {}.",
+                    path.display(), configuration.name, configuration.fqbn, configuration.boards_file
+                ));
+            }
+            fs::copy(&path, staged_sketch.join("partitions.csv")).map_err(|error| {
+                format!(
+                    "Could not stage partition file {} for {}: {error}",
+                    path.display(),
+                    configuration.name
+                )
+            })?;
+            let name = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("custom");
+            build_property_arguments.extend([
+                "--build-property".to_owned(),
+                format!("build.partitions={name}"),
+            ]);
+        }
+    }
+
+    let mut args = vec![
+        "compile".to_owned(),
+        "--no-color".to_owned(),
+        "--fqbn".to_owned(),
+        fqbn.to_owned(),
+        "--show-properties=expanded".to_owned(),
+    ];
+    args.extend(board_option_arguments(board_options));
+    args.extend(build_property_arguments.clone());
+    args.push(staged_sketch.to_string_lossy().into_owned());
+    let command = arduino_cli_path();
+    let output = arduino_cli_command(&command)
+        .args(args)
+        .output()
+        .await
+        .map_err(|error| friendly_command_error(&command, error))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if detail.is_empty() {
+            format!(
+                "Could not resolve build properties for {}.",
+                configuration.name
+            )
+        } else {
+            format!(
+                "Could not resolve build properties for {} ({}): {detail}",
+                configuration.name, configuration.fqbn
+            )
+        });
+    }
+    let properties = properties_from_text(&String::from_utf8_lossy(&output.stdout));
+    validate_expanded_commands(&properties, &configuration)?;
+    validate_partition_file(&properties, &configuration, staged_sketch)?;
+    Ok(build_property_arguments)
+}
+
 #[tauri::command]
 async fn compile_sketch(
     app: AppHandle,
@@ -1152,6 +1730,7 @@ async fn compile_sketch(
     library_state: State<'_, LibraryState>,
     sketch_code: String,
     fqbn: String,
+    board_options: HashMap<String, String>,
 ) -> Result<OperationResult, String> {
     let library_installing = library_state
         .statuses
@@ -1168,13 +1747,14 @@ async fn compile_sketch(
         return Err("Arduino libraries are still being downloaded. Wait for package installation to finish, then compile again.".to_owned());
     }
     let staged_sketch = stage_sketch_source(&sketch_code)?;
-    run_tool(
-        app,
-        state,
-        "compile",
-        vec!["compile".into(), "--fqbn".into(), fqbn, staged_sketch],
-    )
-    .await
+    let staged_sketch_path = Path::new(&staged_sketch);
+    let build_property_arguments =
+        preflight_board_configuration(staged_sketch_path, &fqbn, &board_options).await?;
+    let mut args = vec!["compile".into(), "--fqbn".into(), fqbn];
+    args.extend(board_option_arguments(&board_options));
+    args.extend(build_property_arguments);
+    args.push(staged_sketch);
+    run_tool(app, state, "compile", args).await
 }
 
 fn stop_serial_session(
@@ -1216,6 +1796,7 @@ async fn upload_sketch(
     sketch_code: String,
     port: String,
     fqbn: String,
+    board_options: HashMap<String, String>,
 ) -> Result<OperationResult, String> {
     let staged_sketch = stage_sketch_source(&sketch_code)?;
     if serial_state.blocked_for_upload.swap(true, Ordering::SeqCst) {
@@ -1224,20 +1805,10 @@ async fn upload_sketch(
 
     let result = match stop_serial_session(&serial_state, "upload", Some(&app)) {
         Ok(_) => {
-            run_tool(
-                app,
-                tool_state,
-                "upload",
-                vec![
-                    "upload".into(),
-                    "-p".into(),
-                    port,
-                    "--fqbn".into(),
-                    fqbn,
-                    staged_sketch,
-                ],
-            )
-            .await
+            let mut args = vec!["upload".into(), "-p".into(), port, "--fqbn".into(), fqbn];
+            args.extend(board_option_arguments(&board_options));
+            args.push(staged_sketch);
+            run_tool(app, tool_state, "upload", args).await
         }
         Err(error) => Err(error),
     };
@@ -1971,6 +2542,8 @@ pub fn run() {
         .manage(LibraryState::default())
         .invoke_handler(tauri::generate_handler![
             list_boards,
+            list_installed_boards,
+            get_board_configuration,
             read_sketch,
             write_sketch,
             compile_sketch,
@@ -2157,12 +2730,16 @@ mod tests {
                 vid: String::new(),
                 pid: String::new(),
                 identity_key: "/dev/ttyUSB0".to_owned(),
+                candidates: vec![BoardCandidate {
+                    name: "ESP32 Dev Module".to_owned(),
+                    fqbn: "esp32:esp32:esp32".to_owned(),
+                }],
             }]
         );
     }
 
     #[test]
-    fn gives_unknown_serial_ports_a_working_esp32_default() {
+    fn unknown_serial_ports_require_a_concrete_board_choice() {
         let json = br#"{
           "detected_ports": [{
             "address": "COM4",
@@ -2173,14 +2750,15 @@ mod tests {
         assert_eq!(
             parse_board_list(json).unwrap(),
             vec![Board {
-                name: "Possible ESP32 board".to_owned(),
+                name: "Unidentified Arduino-compatible board".to_owned(),
                 port: "COM4".to_owned(),
-                fqbn: DEFAULT_ESP32_FQBN.to_owned(),
+                fqbn: String::new(),
                 matched: false,
                 usb_label: "USB serial".to_owned(),
                 vid: String::new(),
                 pid: String::new(),
                 identity_key: "COM4".to_owned(),
+                candidates: Vec::new(),
             }]
         );
     }
@@ -2199,20 +2777,21 @@ mod tests {
         assert_eq!(
             parse_board_list(json).unwrap(),
             vec![Board {
-                name: "Possible ESP32 board".to_owned(),
+                name: "Unidentified Arduino-compatible board".to_owned(),
                 port: "/dev/ttyUSB0".to_owned(),
-                fqbn: DEFAULT_ESP32_FQBN.to_owned(),
+                fqbn: String::new(),
                 matched: false,
                 usb_label: "USB serial".to_owned(),
                 vid: String::new(),
                 pid: String::new(),
                 identity_key: "/dev/ttyUSB0".to_owned(),
+                candidates: Vec::new(),
             }]
         );
     }
 
     #[test]
-    fn filters_builtin_and_unrelated_serial_devices() {
+    fn filters_builtin_and_unrelated_serial_devices_but_keeps_other_cores() {
         let json = br#"{
           "detected_ports": [
             {"port": {"address": "/dev/ttyS0", "label": "/dev/ttyS0", "protocol": "serial"}},
@@ -2231,7 +2810,10 @@ mod tests {
           ]
         }"#;
 
-        assert!(parse_board_list(json).unwrap().is_empty());
+        let boards = parse_board_list(json).unwrap();
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0].name, "Arduino Uno");
+        assert_eq!(boards[0].fqbn, "arduino:avr:uno");
     }
 
     #[test]
@@ -2253,10 +2835,227 @@ mod tests {
           }]
         }"#;
         let board = parse_board_list(json).unwrap().remove(0);
-        assert_eq!(board.name, "Possible ESP32 board");
+        assert_eq!(board.name, "Unidentified Arduino-compatible board");
         assert_eq!(board.usb_label, "CP2102");
         assert_eq!(board.identity_key, "0x10C4:0xEA60:0001");
         assert!(!board.matched);
+    }
+
+    fn test_board_configuration(platform_path: &Path) -> BoardConfiguration {
+        BoardConfiguration {
+            name: "Test Board".to_owned(),
+            fqbn: "vendor:architecture:test".to_owned(),
+            platform_package: "vendor".to_owned(),
+            platform_architecture: "architecture".to_owned(),
+            platform_version: "1.2.3".to_owned(),
+            platform_path: platform_path.to_string_lossy().into_owned(),
+            boards_file: platform_path
+                .join("boards.txt")
+                .to_string_lossy()
+                .into_owned(),
+            menus: Vec::new(),
+            requires_selection: Vec::new(),
+        }
+    }
+
+    fn test_directory(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = env::temp_dir().join(format!("trace-{label}-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn partition_properties(partition: Option<&str>, platform: &Path) -> HashMap<String, String> {
+        let mut properties = HashMap::from([
+            (
+                "runtime.platform.path".to_owned(),
+                platform.to_string_lossy().into_owned(),
+            ),
+            (
+                "recipe.hooks.prebuild.1.pattern".to_owned(),
+                "copy partition.csv".to_owned(),
+            ),
+        ]);
+        if let Some(partition) = partition {
+            properties.insert("build.partitions".to_owned(), partition.to_owned());
+        }
+        properties
+    }
+
+    #[test]
+    fn validates_a_normal_board_default_partition_scheme() {
+        let platform = test_directory("default-partition");
+        let partition_dir = platform.join("tools/partitions");
+        let staged = platform.join("staged");
+        fs::create_dir_all(&partition_dir).unwrap();
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(partition_dir.join("default.csv"), "# default").unwrap();
+        let properties = partition_properties(Some("default"), &platform);
+
+        assert!(validate_partition_file(
+            &properties,
+            &test_board_configuration(&platform),
+            &staged
+        )
+        .is_ok());
+        fs::remove_dir_all(platform).unwrap();
+    }
+
+    #[test]
+    fn validates_a_user_selected_partition_scheme() {
+        let platform = test_directory("selected-partition");
+        let partition_dir = platform.join("tools/partitions");
+        let staged = platform.join("staged");
+        fs::create_dir_all(&partition_dir).unwrap();
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(partition_dir.join("huge_app.csv"), "# selected").unwrap();
+        let properties = partition_properties(Some("huge_app"), &platform);
+
+        assert!(validate_partition_file(
+            &properties,
+            &test_board_configuration(&platform),
+            &staged
+        )
+        .is_ok());
+        fs::remove_dir_all(platform).unwrap();
+    }
+
+    #[test]
+    fn accepts_boards_without_partition_properties() {
+        let platform = test_directory("no-partition");
+        let staged = platform.join("staged");
+        fs::create_dir_all(&staged).unwrap();
+        let properties = HashMap::from([(
+            "recipe.cpp.o.pattern".to_owned(),
+            "compiler {source_file} -o {object_file}".to_owned(),
+        )]);
+
+        assert!(validate_partition_file(
+            &properties,
+            &test_board_configuration(&platform),
+            &staged
+        )
+        .is_ok());
+        fs::remove_dir_all(platform).unwrap();
+    }
+
+    #[test]
+    fn hides_generic_template_matches_and_uses_the_concrete_board() {
+        let json = br#"{
+          "detected_ports": [{
+            "address": "/dev/ttyACM0",
+            "label": "USB JTAG",
+            "boards": [
+              {"name": "ESP32 Family Device", "fqbn": "esp32:esp32:esp32_family", "is_hidden": true},
+              {"name": "Concrete Board", "fqbn": "thirdparty:esp32:concrete"}
+            ]
+          }]
+        }"#;
+        let board = parse_board_list(json).unwrap().remove(0);
+
+        assert_eq!(board.name, "Concrete Board");
+        assert_eq!(board.fqbn, "thirdparty:esp32:concrete");
+        assert_eq!(board.candidates.len(), 1);
+        assert!(is_template_board(
+            "ESP32 Family Device",
+            "esp32:esp32:esp32_family"
+        ));
+    }
+
+    #[test]
+    fn multiple_concrete_matches_require_an_explicit_choice() {
+        let json = br#"{
+          "detected_ports": [{
+            "address": "/dev/ttyACM0",
+            "boards": [
+              {"name": "Board A", "fqbn": "vendor:arch:a"},
+              {"name": "Board B", "fqbn": "vendor:arch:b"}
+            ]
+          }]
+        }"#;
+        let board = parse_board_list(json).unwrap().remove(0);
+
+        assert_eq!(board.name, "Multiple compatible boards");
+        assert!(board.fqbn.is_empty());
+        assert!(!board.matched);
+        assert_eq!(board.candidates.len(), 2);
+    }
+
+    #[test]
+    fn resolves_nested_property_placeholders() {
+        let properties = HashMap::from([
+            (
+                "build.partitions".to_owned(),
+                "{selected.partition}".to_owned(),
+            ),
+            (
+                "selected.partition".to_owned(),
+                "{partition.name}".to_owned(),
+            ),
+            ("partition.name".to_owned(), "default".to_owned()),
+            (
+                "runtime.platform.path".to_owned(),
+                "/tmp/platform".to_owned(),
+            ),
+        ]);
+
+        assert_eq!(
+            resolve_placeholders(
+                "{runtime.platform.path}/tools/partitions/{build.partitions}.csv",
+                &properties
+            )
+            .unwrap(),
+            "/tmp/platform/tools/partitions/default.csv"
+        );
+    }
+
+    #[test]
+    fn reports_an_intentionally_missing_partition_csv() {
+        let platform = test_directory("missing-partition");
+        let staged = platform.join("staged");
+        fs::create_dir_all(&staged).unwrap();
+        let properties = partition_properties(Some("does_not_exist"), &platform);
+        let error =
+            validate_partition_file(&properties, &test_board_configuration(&platform), &staged)
+                .unwrap_err();
+
+        assert!(error.contains("does_not_exist"));
+        assert!(error.contains("vendor:architecture:test"));
+        assert!(error.contains("boards.txt"));
+        fs::remove_dir_all(platform).unwrap();
+    }
+
+    #[test]
+    fn blocks_unresolved_placeholders_before_command_execution() {
+        let platform = PathBuf::from("/tmp/test-platform");
+        let configuration = test_board_configuration(&platform);
+        let properties = HashMap::from([(
+            "recipe.hooks.prebuild.1.pattern".to_owned(),
+            "cp tools/partitions/{build.partitions}.csv output.csv".to_owned(),
+        )]);
+        let error = validate_expanded_commands(&properties, &configuration).unwrap_err();
+
+        assert!(error.contains("{build.partitions}"));
+        assert!(error.contains("Test Board"));
+        assert!(error.contains("vendor:architecture 1.2.3"));
+        assert!(error.contains("boards.txt"));
+    }
+
+    #[test]
+    fn supports_direct_partition_file_paths() {
+        let platform = PathBuf::from("/tmp/platform");
+        assert_eq!(
+            direct_partition_path("configs/custom.csv", &platform),
+            Some(platform.join("configs/custom.csv"))
+        );
+        assert_eq!(
+            direct_partition_path("/opt/boards/custom.csv", &platform),
+            Some(PathBuf::from("/opt/boards/custom.csv"))
+        );
+        assert_eq!(direct_partition_path("default", &platform), None);
     }
 
     #[test]

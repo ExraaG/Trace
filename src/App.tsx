@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Save,
   Settings,
+  SlidersHorizontal,
   TerminalSquare,
   Upload,
 } from "lucide-react";
@@ -32,6 +33,7 @@ import {
 } from "react-resizable-panels";
 import { AiAssistant } from "./components/AiAssistant";
 import { AiSettingsModal } from "./components/AiSettingsModal";
+import { BoardOptionsModal } from "./components/BoardOptionsModal";
 import { BuildOutput } from "./components/BuildOutput";
 import { PackageInstallBar } from "./components/PackageInstallBar";
 import { SerialConsole } from "./components/SerialConsole";
@@ -42,6 +44,8 @@ import type {
   AiProvider,
   AppSettings,
   Board,
+  BoardConfiguration,
+  InstalledBoard,
   LibraryInstallEvent,
   LayoutPreset,
   LogEntry,
@@ -71,16 +75,13 @@ void loop() {
 }
 `;
 
-const BOARD_VARIANTS = [
-  { label: "ESP32 Dev Module", fqbn: "esp32:esp32:esp32" },
-  { label: "ESP32-S2", fqbn: "esp32:esp32:esp32s2" },
-  { label: "ESP32-S3", fqbn: "esp32:esp32:esp32s3" },
-  { label: "ESP32-C3", fqbn: "esp32:esp32:esp32c3" },
-] as const;
-
-function sourceSignature(source: string, port: string, fqbn: string) {
+function sourceSignature(source: string, port: string, fqbn: string, boardOptions: Record<string, string>) {
   let hash = 2166136261;
-  const value = `${port}\0${fqbn}\0${source}`;
+  const options = Object.entries(boardOptions)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([option, selected]) => `${option}=${selected}`)
+    .join(",");
+  const value = `${port}\0${fqbn}\0${options}\0${source}`;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
@@ -133,8 +134,13 @@ function App() {
   const [filePath, setFilePath] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [boards, setBoards] = useState<Board[]>([]);
+  const [installedBoards, setInstalledBoards] = useState<InstalledBoard[]>([]);
   const [selectedPort, setSelectedPort] = useState("");
   const [boardsLoading, setBoardsLoading] = useState(false);
+  const [boardConfiguration, setBoardConfiguration] = useState<BoardConfiguration | null>(null);
+  const [boardConfigurationLoading, setBoardConfigurationLoading] = useState(false);
+  const [boardConfigurationError, setBoardConfigurationError] = useState<string | null>(null);
+  const [boardOptionsOpen, setBoardOptionsOpen] = useState(false);
   const [operation, setOperation] = useState<Operation | null>(null);
   const [compiledSignature, setCompiledSignature] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -168,16 +174,28 @@ function App() {
     () => boards.find((board) => board.port === selectedPort) ?? null,
     [boards, selectedPort],
   );
+  const selectedOverride = selectedBoard ? settings.boardTypeOverrides[selectedBoard.identityKey] : undefined;
   const selectedFqbn = selectedBoard
-    ? settings.boardTypeOverrides[selectedBoard.identityKey] ?? selectedBoard.fqbn
+    ? selectedOverride ?? selectedBoard.fqbn
     : "";
-  const selectedBoardName = selectedBoard?.matched
-    ? selectedBoard.name
-    : selectedBoard
-      ? `Possible ESP32 (${selectedBoard.usbLabel})`
-      : "ESP32 board";
+  const selectedBoardOptions = useMemo(
+    () => selectedFqbn ? settings.boardOptionSelections[selectedFqbn] ?? {} : {},
+    [selectedFqbn, settings.boardOptionSelections],
+  );
+  const selectedBoardName = boardConfiguration?.name
+    ?? (selectedBoard?.matched ? selectedBoard.name : selectedBoard ? `Unidentified board (${selectedBoard.usbLabel})` : "Arduino board");
+  const boardChoices = useMemo(() => {
+    if (!selectedBoard) return [];
+    const choices = [...selectedBoard.candidates, ...installedBoards];
+    const seen = new Set<string>();
+    return choices.filter((board) => {
+      if (seen.has(board.fqbn)) return false;
+      seen.add(board.fqbn);
+      return true;
+    });
+  }, [installedBoards, selectedBoard]);
   const currentCompileSignature = selectedBoard
-    ? sourceSignature(code, selectedBoard.port, selectedFqbn)
+    ? sourceSignature(code, selectedBoard.port, selectedFqbn, selectedBoardOptions)
     : null;
   const currentCompileSignatureRef = useRef<string | null>(null);
   currentCompileSignatureRef.current = currentCompileSignature;
@@ -336,7 +354,42 @@ function App() {
   }, [refreshBoards]);
 
   useEffect(() => {
-    if (!selectedBoard || includedHeaders.length === 0) return;
+    void invoke<InstalledBoard[]>("list_installed_boards")
+      .then(setInstalledBoards)
+      .catch((error) => setBoardConfigurationError(`Could not list installed boards: ${errorMessage(error)}`));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedFqbn) {
+      setBoardConfiguration(null);
+      setBoardConfigurationError(null);
+      setBoardConfigurationLoading(false);
+      return;
+    }
+    setBoardConfigurationLoading(true);
+    setBoardConfigurationError(null);
+    void invoke<BoardConfiguration>("get_board_configuration", {
+      fqbn: selectedFqbn,
+      boardOptions: selectedBoardOptions,
+    }).then((configuration) => {
+      if (cancelled) return;
+      setBoardConfiguration(configuration);
+      if (configuration.requiresSelection.length > 0) setBoardOptionsOpen(true);
+    }).catch((error) => {
+      if (cancelled) return;
+      setBoardConfiguration(null);
+      setBoardConfigurationError(errorMessage(error));
+    }).finally(() => {
+      if (!cancelled) setBoardConfigurationLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedFqbn, selectedBoardOptions]);
+
+  useEffect(() => {
+    if (!selectedBoard || !selectedFqbn || includedHeaders.length === 0) return;
     const timer = window.setTimeout(() => {
       void invoke("sync_libraries", {
         headers: includedHeaders,
@@ -475,6 +528,27 @@ function App() {
       appendLog("Select a connected board before compiling.", "system", "stderr");
       return { success: false, message: "Compile could not start because no board is selected." };
     }
+    if (!selectedFqbn) {
+      const message = "Choose a concrete installed board for this port before compiling.";
+      appendLog(message, "system", "stderr");
+      return { success: false, message };
+    }
+    if (boardConfigurationLoading) {
+      const message = "Board configuration is still loading. Try Compile again in a moment.";
+      appendLog(message, "system", "stderr");
+      return { success: false, message };
+    }
+    if (boardConfigurationError || !boardConfiguration) {
+      const message = boardConfigurationError ?? "Board configuration could not be resolved.";
+      appendLog(message, "system", "stderr");
+      return { success: false, message };
+    }
+    if (boardConfiguration.requiresSelection.length > 0) {
+      setBoardOptionsOpen(true);
+      const message = `Choose board options for ${boardConfiguration.requiresSelection.join(", ")} before compiling.`;
+      appendLog(message, "system", "stderr");
+      return { success: false, message };
+    }
     if (includedHeaders.length > 0) {
       try {
         await invoke("sync_libraries", {
@@ -493,6 +567,7 @@ function App() {
       const result = await invoke<OperationResult>("compile_sketch", {
         sketchCode: code,
         fqbn: selectedFqbn,
+        boardOptions: selectedBoardOptions,
       });
       setCompiledSignature(result.success ? currentCompileSignature : null);
       compileSucceededRef.current = result.success
@@ -573,6 +648,9 @@ function App() {
     if (!selectedBoard) {
       return { success: false, message: "Upload could not start because no board is selected." };
     }
+    if (!selectedFqbn || !boardConfiguration || boardConfigurationError) {
+      return { success: false, message: "Choose a valid concrete board configuration before uploading." };
+    }
     if (!compileSucceededRef.current) {
       return { success: false, message: "Upload is disabled until the current editor buffer compiles successfully." };
     }
@@ -590,6 +668,7 @@ function App() {
         sketchCode: code,
         port: selectedBoard.port,
         fqbn: selectedFqbn,
+        boardOptions: selectedBoardOptions,
       });
       appendLog(
         result.success ? "Upload finished successfully." : `Upload failed (exit ${result.exitCode ?? "unknown"}).`,
@@ -780,6 +859,9 @@ function App() {
             value={selectedPort}
             onChange={(event) => {
               setSelectedPort(event.target.value);
+              setBoardConfiguration(null);
+              setBoardConfigurationError(null);
+              setBoardOptionsOpen(false);
               invalidateCompile();
               setReconnectTarget(null);
               if (serialOpen) void closeSerial();
@@ -792,18 +874,21 @@ function App() {
               <option key={board.identityKey} value={board.port}>
                 {board.matched
                   ? `${board.name} · ${board.port}`
-                  : `Possible ESP32 (${board.usbLabel}) · ${board.port}`}
+                  : `Unidentified board (${board.usbLabel}) · ${board.port}`}
               </option>
             ))}
           </select>
           <ChevronDown size={13} className="pointer-events-none text-zinc-500" />
         </div>
-        {selectedBoard && !selectedBoard.matched && (
-          <div className="layout-switcher" title={`Choose the ESP32 family connected through ${selectedBoard.usbLabel}`}>
+        {selectedBoard && (!selectedBoard.matched || selectedBoard.candidates.length > 1 || (selectedOverride && selectedOverride !== selectedBoard.fqbn)) && (
+          <div className="layout-switcher max-w-64" title={`Choose the concrete board connected through ${selectedBoard.usbLabel}`}>
             <select
               value={selectedFqbn}
               onChange={(event) => {
                 const fqbn = event.target.value;
+                setBoardConfiguration(null);
+                setBoardConfigurationError(null);
+                setBoardOptionsOpen(false);
                 updateSettings((current) => ({
                   ...current,
                   boardTypeOverrides: {
@@ -814,14 +899,26 @@ function App() {
                 invalidateCompile();
               }}
               disabled={operation !== null}
-              aria-label="ESP32 board family"
+              aria-label="Concrete board model"
             >
-              {BOARD_VARIANTS.map((variant) => (
-                <option key={variant.fqbn} value={variant.fqbn}>{variant.label}</option>
+              {!selectedFqbn && <option value="">Choose board…</option>}
+              {boardChoices.map((board) => (
+                <option key={board.fqbn} value={board.fqbn}>{board.name} · {board.fqbn}</option>
               ))}
             </select>
             <ChevronDown size={12} className="pointer-events-none text-zinc-500" />
           </div>
+        )}
+        {selectedFqbn && (
+          <button
+            className={`icon-button ${boardOptionsOpen ? "is-active" : ""}`}
+            onClick={() => boardConfiguration && setBoardOptionsOpen(true)}
+            disabled={operation !== null || boardConfigurationLoading || !boardConfiguration}
+            title={boardConfigurationLoading ? "Loading board options…" : "Board options"}
+            aria-label="Board options"
+          >
+            {boardConfigurationLoading ? <LoaderCircle size={14} className="animate-spin" /> : <SlidersHorizontal size={14} />}
+          </button>
         )}
         <button className="icon-button" onClick={() => void refreshBoards()} disabled={boardsLoading || operation !== null} title="Refresh boards" aria-label="Refresh boards">
           <RefreshCw size={14} className={boardsLoading ? "animate-spin" : ""} />
@@ -863,6 +960,11 @@ function App() {
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-red-950/70 bg-red-950/20 px-3 text-[11px] text-red-300" role="status">
           <AlertTriangle size={12} /> Board detection failed: {boardError}
           <button className="panel-action ml-auto" onClick={() => void refreshBoards()}>Retry</button>
+        </div>
+      )}
+      {boardConfigurationError && (
+        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-amber-950/70 bg-amber-950/20 px-3 text-[11px] text-amber-200" role="status">
+          <AlertTriangle size={12} /> Board configuration: {boardConfigurationError}
         </div>
       )}
 
@@ -1073,8 +1175,29 @@ function App() {
           {compileSucceeded ? "Compiled" : "Not compiled"}
         </span>
         <span>{settings.layout.preset === "custom" ? "Custom layout" : `${settings.layout.preset[0].toUpperCase()}${settings.layout.preset.slice(1)} layout`}</span>
-        <span className="ml-auto">ESP32 · Arduino</span>
+        <span className="ml-auto">{boardConfiguration ? `${boardConfiguration.platformArchitecture.toUpperCase()} · Arduino` : "Arduino"}</span>
       </footer>
+
+      {boardOptionsOpen && boardConfiguration && (
+        <BoardOptionsModal
+          configuration={boardConfiguration}
+          selections={selectedBoardOptions}
+          onSave={(selections) => {
+            setBoardConfiguration(null);
+            setBoardConfigurationLoading(true);
+            updateSettings((current) => ({
+              ...current,
+              boardOptionSelections: {
+                ...current.boardOptionSelections,
+                [selectedFqbn]: selections,
+              },
+            }));
+            invalidateCompile();
+            setBoardOptionsOpen(false);
+          }}
+          onClose={() => setBoardOptionsOpen(false)}
+        />
+      )}
 
       {(!settings.onboardingComplete || settingsOpen) && (
         <AiSettingsModal

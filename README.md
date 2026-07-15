@@ -2,7 +2,7 @@
 
 Trace is a focused desktop IDE for ESP32 and Arduino development. It provides a modern code editor, a beginner-friendly visual block editor, live build output, automatic library installation, upload controls, and a serial console while leaving the actual toolchain work to `arduino-cli`.
 
-Trace deliberately keeps the workflow small: open or write one `.ino` sketch, choose an ESP32, compile, upload, and inspect serial data. There is no project tree or board-package manager to get between you and the board.
+Trace deliberately keeps the workflow small: open or write one `.ino` sketch, choose a connected Arduino-compatible board, compile, upload, and inspect serial data. ESP32 is configured by the installer; other installed Arduino cores use the same workflow. There is no project tree or board-package manager to get between you and the board.
 
 ## Install Trace
 
@@ -39,6 +39,7 @@ The one-command installer supplies the application toolchain. The following are 
 - A current [Node.js LTS release](https://nodejs.org/en/download) with npm. npm is the package manager used by the checked-in lockfile.
 - [`arduino-cli`](https://arduino.github.io/arduino-cli/latest/installation/) installed on `PATH`, or in Trace's managed `~/.trace/bin` location.
 - The [Espressif Arduino core for ESP32](https://docs.espressif.com/projects/arduino-esp32/en/latest/installing.html), installed as the `esp32:esp32` core. The one-command installers configure this automatically.
+- Any additional Arduino core required by the board you intend to use. Trace reads its boards, menus, recipes, and defaults through `arduino-cli`.
 - The USB/serial driver required by your specific ESP32 board. On Linux, your user must also have serial-port access (commonly membership in the `dialout` or `uucp` group); log out and back in after changing group membership.
 
 On Linux, Trace automatically applies the NVIDIA explicit-sync compatibility workaround required by affected WebKitGTK/Wayland combinations. No launch-time environment variable is needed.
@@ -88,25 +89,26 @@ The release workflow builds an x86_64 Linux AppImage and DEB, Intel and Apple Si
 When version numbers in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` match, publish with:
 
 ```sh
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 GitHub Actions creates the release and uploads all platform installers. Once that workflow finishes, the one-command installers above use the newest published release automatically.
 
 ## Using Trace
 
-1. Connect an ESP32 over USB and select its name and port in the toolbar. Use refresh if it was connected after Trace opened.
-2. Open an existing `.ino` file or edit the starter sketch. Saving is optional for compilation. Select **Blocks** beside **Code** above the editor to build a sketch visually; connected blocks generate the same `.ino` buffer used by compile and upload.
-3. Select **Compile**. Trace compiles the current editor buffer and streams `arduino-cli` output into the build panel.
-4. After a successful compile, select **Upload**. Upload remains disabled until that session has a successful, current compile.
-5. Connect the serial console, select a baud rate (115200 by default), and send or receive newline-delimited data.
+1. Connect a board over USB and select its name and port in the toolbar. Use refresh if it was connected after Trace opened. Hidden family/template definitions are ignored; ambiguous devices require a concrete installed board choice.
+2. Use the sliders button beside the board picker to review platform-provided options such as flash size, partition scheme, PSRAM, or upload mode. Trace uses platform defaults unless you select another value.
+3. Open an existing `.ino` file or edit the starter sketch. Saving is optional for compilation. Select **Blocks** beside **Code** above the editor to build a sketch visually; connected blocks generate the same `.ino` buffer used by compile and upload.
+4. Select **Compile**. Trace validates expanded build recipes and partition files before starting, then streams `arduino-cli` output into the build panel.
+5. After a successful compile, select **Upload**. Upload remains disabled until that session has a successful, current compile.
+6. Connect the serial console, select a baud rate (115200 by default), and send or receive newline-delimited data.
 
 Arduino sketches conventionally live in a directory with the same name as the primary `.ino` file (for example, `Blink/Blink.ino`). Following that convention provides the best compatibility with Arduino CLI.
 
 ## Automatic libraries
 
-When the editor contains an angle-bracket include such as `#include <Stepper.h>`, Trace checks the selected ESP32 core and installed Arduino libraries first. If the header is missing, Trace resolves the matching package through Arduino Library Manager and installs it asynchronously with `arduino-cli`. A compact package bar appears below the toolbar; select it to see per-package resolution, download, installation, completion, or failure progress. Failed installs remain visible and can be retried. Compile waits for active installs and reports unresolved library failures clearly instead of starting a broken build.
+When the editor contains an angle-bracket include such as `#include <Stepper.h>`, Trace checks the selected board core and installed Arduino libraries first. If the header is missing, Trace resolves the matching package through Arduino Library Manager and installs it asynchronously with `arduino-cli`. A compact package bar appears below the toolbar; select it to see per-package resolution, download, installation, completion, or failure progress. Failed installs remain visible and can be retried. Compile waits for active installs and reports unresolved library failures clearly instead of starting a broken build.
 
 ## Layout & Panels
 
