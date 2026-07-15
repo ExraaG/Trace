@@ -688,19 +688,65 @@ fn exact_library_name(header: &str, candidates: &[String]) -> Option<String> {
 }
 
 fn preferred_library_name(header: &str, candidates: &[String]) -> Option<String> {
-    if let Some(package) = exact_library_name(header, candidates) {
-        return Some(package);
-    }
     let stem = Path::new(header)
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or(header);
+    let mut literal_matches = candidates
+        .iter()
+        .filter(|candidate| candidate.eq_ignore_ascii_case(stem));
+    if let Some(matched) = literal_matches.next() {
+        if literal_matches.next().is_none() {
+            return Some(matched.clone());
+        }
+    }
+    if let Some(package) = exact_library_name(header, candidates) {
+        return Some(package);
+    }
     let sensor_library = format!("{stem} sensor library");
     let mut matches = candidates
         .iter()
         .filter(|candidate| candidate.eq_ignore_ascii_case(&sensor_library));
-    let matched = matches.next()?.clone();
-    matches.next().is_none().then_some(matched)
+    if let Some(matched) = matches.next() {
+        if matches.next().is_none() {
+            return Some(matched.clone());
+        }
+    }
+
+    let expected = library_name_key(stem);
+    for suffix in ["display", "lib"] {
+        let Some(base) = expected.strip_suffix(suffix) else {
+            continue;
+        };
+        if base.len() < 3 {
+            continue;
+        }
+        let mut base_matches = candidates
+            .iter()
+            .filter(|candidate| library_name_key(candidate) == base);
+        let Some(matched) = base_matches.next() else {
+            continue;
+        };
+        if base_matches.next().is_none() {
+            return Some(matched.clone());
+        }
+    }
+    None
+}
+
+fn library_search_terms(header: &str) -> Vec<String> {
+    let stem = Path::new(header)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(header);
+    let lower = stem.to_ascii_lowercase();
+    let mut terms = vec![stem.to_owned()];
+    for suffix in ["display", "lib"] {
+        if lower.ends_with(suffix) && stem.len() > suffix.len() + 2 {
+            terms.push(stem[..stem.len() - suffix.len()].to_owned());
+        }
+    }
+    terms
 }
 
 async fn run_arduino_cli_json(args: &[String]) -> Result<Value, String> {
@@ -747,15 +793,20 @@ async fn resolve_library_package(header: &str) -> Result<Option<String>, String>
     // The Library Manager index does not consistently populate `provides_includes`.
     // A normal search plus normalized exact match handles headers such as
     // Adafruit_SSD1306.h whose package is named "Adafruit SSD1306".
-    let broad = run_arduino_cli_json(&[
-        "lib".to_owned(),
-        "search".to_owned(),
-        stem.to_owned(),
-        compact.clone(),
-        json_flag.clone(),
-    ])
-    .await?;
-    let broad_matches = search_library_names(&broad);
+    let mut broad_matches = Vec::new();
+    for term in library_search_terms(header) {
+        let broad = run_arduino_cli_json(&[
+            "lib".to_owned(),
+            "search".to_owned(),
+            term,
+            compact.clone(),
+            json_flag.clone(),
+        ])
+        .await?;
+        broad_matches.extend(search_library_names(&broad));
+    }
+    broad_matches.sort_unstable();
+    broad_matches.dedup();
     if let Some(package) = preferred_library_name(header, &broad_matches) {
         return Ok(Some(package));
     }
@@ -1955,6 +2006,38 @@ mod tests {
         assert_eq!(
             preferred_library_name("DHT.h", &candidates),
             Some("DHT sensor library".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolves_common_header_suffixes_without_guessing_unrelated_packages() {
+        assert_eq!(
+            library_search_terms("U8g2lib.h"),
+            vec!["U8g2lib".to_owned(), "U8g2".to_owned()]
+        );
+        assert_eq!(
+            preferred_library_name(
+                "U8g2lib.h",
+                &["U8g2".to_owned(), "U8g2_for_Adafruit_GFX".to_owned()]
+            ),
+            Some("U8g2".to_owned())
+        );
+        assert_eq!(
+            preferred_library_name(
+                "TM1637Display.h",
+                &["TM1637".to_owned(), "TM1637TinyDisplay".to_owned()]
+            ),
+            Some("TM1637".to_owned())
+        );
+        assert_eq!(
+            preferred_library_name(
+                "LiquidCrystal_I2C.h",
+                &[
+                    "LiquidCrystal I2C".to_owned(),
+                    "LiquidCrystal_I2C".to_owned()
+                ]
+            ),
+            Some("LiquidCrystal_I2C".to_owned())
         );
     }
 
