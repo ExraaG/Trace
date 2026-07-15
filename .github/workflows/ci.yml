@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 concurrency:
   group: trace-ci-${{ github.ref }}
