@@ -5,10 +5,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
+  Blocks,
   Bot,
   Check,
   ChevronDown,
   CircleDot,
+  Code2,
   Columns3,
   FolderOpen,
   LoaderCircle,
@@ -19,7 +21,7 @@ import {
   TerminalSquare,
   Upload,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Group,
   Panel,
@@ -50,6 +52,11 @@ import type {
   SerialStateEvent,
   ToolOutput,
 } from "./types";
+
+const BlockEditor = lazy(async () => {
+  const module = await import("./components/BlockEditor");
+  return { default: module.BlockEditor };
+});
 
 const STARTER_SKETCH = `void setup() {
   Serial.begin(115200);
@@ -121,6 +128,8 @@ function clonePreset(preset: Exclude<LayoutPreset, "custom">, aiEnabled: boolean
 
 function App() {
   const [code, setCode] = useState(STARTER_SKETCH);
+  const [editorView, setEditorView] = useState<"code" | "blocks">("code");
+  const [blocksOpened, setBlocksOpened] = useState(false);
   const [filePath, setFilePath] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [boards, setBoards] = useState<Board[]>([]);
@@ -190,6 +199,10 @@ function App() {
   useEffect(() => {
     compileSucceededRef.current = compileSucceeded;
   }, [compileSucceeded]);
+
+  useEffect(() => {
+    if (aiEdit) setEditorView("code");
+  }, [aiEdit]);
 
   const invalidateCompile = useCallback(() => {
     setCompiledSignature(null);
@@ -438,6 +451,8 @@ function App() {
       const contents = await invoke<string>("read_sketch", { path });
       setCode(contents);
       setAiEdit(null);
+      setEditorView("code");
+      setBlocksOpened(false);
       setFilePath(path);
       setDirty(false);
       invalidateCompile();
@@ -875,6 +890,25 @@ function App() {
                   <span className="mr-2 h-2 w-2 rounded-full bg-orange-500" />
                   <span className="text-zinc-300">{basename(filePath)}</span>
                   {dirty && <span className="ml-1 text-zinc-500">•</span>}
+                  <div className="ml-4 flex items-center rounded-md border border-zinc-800 bg-zinc-950/70 p-0.5">
+                    <button
+                      className={`flex items-center gap-1 rounded px-2 py-0.5 text-[10px] transition ${editorView === "code" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+                      onClick={() => setEditorView("code")}
+                    >
+                      <Code2 size={11} /> Code
+                    </button>
+                    <button
+                      className={`flex items-center gap-1 rounded px-2 py-0.5 text-[10px] transition ${editorView === "blocks" ? "bg-orange-500/15 text-orange-300" : "text-zinc-500 hover:text-zinc-300"}`}
+                      onClick={() => {
+                        setBlocksOpened(true);
+                        setEditorView("blocks");
+                      }}
+                      disabled={aiEdit !== null}
+                      title={aiEdit ? "Apply or discard AI changes before editing blocks" : "Build the sketch with visual blocks"}
+                    >
+                      <Blocks size={11} /> Blocks
+                    </button>
+                  </div>
                   {aiEdit ? (
                     <div className="ml-auto flex items-center gap-2">
                       <span className="text-[10px] text-zinc-500">AI changes</span>
@@ -891,6 +925,7 @@ function App() {
                           setDirty(true);
                           invalidateCompile();
                           setAiEdit(null);
+                          setBlocksOpened(false);
                         }}
                       >
                         Apply changes
@@ -922,33 +957,52 @@ function App() {
                       }}
                     />
                   ) : (
-                    <Editor
-                      height="100%"
-                      language="cpp"
-                      theme="trace-dark"
-                      value={code}
-                      beforeMount={configureMonaco}
-                      onChange={(value) => {
-                        setCode(value ?? "");
-                        setDirty(true);
-                        invalidateCompile();
-                      }}
-                      options={{
-                        automaticLayout: true,
-                        minimap: { enabled: false },
-                        fontSize: 13,
-                        lineHeight: 21,
-                        fontFamily: "JetBrains Mono, SFMono-Regular, Consolas, monospace",
-                        fontLigatures: true,
-                        padding: { top: 12, bottom: 12 },
-                        scrollBeyondLastLine: false,
-                        smoothScrolling: true,
-                        renderLineHighlight: "all",
-                        bracketPairColorization: { enabled: true },
-                        guides: { bracketPairs: true, indentation: false },
-                        tabSize: 2,
-                      }}
-                    />
+                    <>
+                      <div className={editorView === "code" ? "h-full" : "hidden h-full"}>
+                        <Editor
+                          height="100%"
+                          language="cpp"
+                          theme="trace-dark"
+                          value={code}
+                          beforeMount={configureMonaco}
+                          onChange={(value) => {
+                            setCode(value ?? "");
+                            setDirty(true);
+                            invalidateCompile();
+                          }}
+                          options={{
+                            automaticLayout: true,
+                            minimap: { enabled: false },
+                            fontSize: 13,
+                            lineHeight: 21,
+                            fontFamily: "JetBrains Mono, SFMono-Regular, Consolas, monospace",
+                            fontLigatures: true,
+                            padding: { top: 12, bottom: 12 },
+                            scrollBeyondLastLine: false,
+                            smoothScrolling: true,
+                            renderLineHighlight: "all",
+                            bracketPairColorization: { enabled: true },
+                            guides: { bracketPairs: true, indentation: false },
+                            tabSize: 2,
+                          }}
+                        />
+                      </div>
+                      {blocksOpened && (
+                        <div className={editorView === "blocks" ? "h-full" : "hidden h-full"}>
+                          <Suspense fallback={<div className="grid h-full place-items-center text-xs text-zinc-600">Loading blocks…</div>}>
+                            <BlockEditor
+                              active={editorView === "blocks"}
+                              onCodeChange={(generated) => {
+                                if (!generated || generated === code) return;
+                                setCode(generated);
+                                setDirty(true);
+                                invalidateCompile();
+                              }}
+                            />
+                          </Suspense>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </section>
