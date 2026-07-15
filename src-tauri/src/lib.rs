@@ -642,7 +642,10 @@ fn installed_library_index(value: &Value) -> (HashSet<String>, HashSet<String>) 
             .flatten()
             .filter_map(Value::as_str)
         {
-            headers.insert(header.to_ascii_lowercase());
+            // Header names are case-sensitive on Linux. Keeping the spelling
+            // reported by Arduino CLI prevents dht.h from being mistaken for
+            // the different and commonly requested DHT.h header.
+            headers.insert(header.to_owned());
         }
     }
     (headers, packages)
@@ -684,6 +687,22 @@ fn exact_library_name(header: &str, candidates: &[String]) -> Option<String> {
     matches.next().is_none().then_some(matched)
 }
 
+fn preferred_library_name(header: &str, candidates: &[String]) -> Option<String> {
+    if let Some(package) = exact_library_name(header, candidates) {
+        return Some(package);
+    }
+    let stem = Path::new(header)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(header);
+    let sensor_library = format!("{stem} sensor library");
+    let mut matches = candidates
+        .iter()
+        .filter(|candidate| candidate.eq_ignore_ascii_case(&sensor_library));
+    let matched = matches.next()?.clone();
+    matches.next().is_none().then_some(matched)
+}
+
 async fn run_arduino_cli_json(args: &[String]) -> Result<Value, String> {
     let command = arduino_cli_path();
     let mut process = Command::new(&command);
@@ -721,7 +740,7 @@ async fn resolve_library_package(header: &str) -> Result<Option<String>, String>
     ])
     .await?;
     let name_matches = search_library_names(&by_name);
-    if let Some(package) = exact_library_name(header, &name_matches) {
+    if let Some(package) = preferred_library_name(header, &name_matches) {
         return Ok(Some(package));
     }
 
@@ -737,7 +756,7 @@ async fn resolve_library_package(header: &str) -> Result<Option<String>, String>
     ])
     .await?;
     let broad_matches = search_library_names(&broad);
-    if let Some(package) = exact_library_name(header, &broad_matches) {
+    if let Some(package) = preferred_library_name(header, &broad_matches) {
         return Ok(Some(package));
     }
 
@@ -750,7 +769,7 @@ async fn resolve_library_package(header: &str) -> Result<Option<String>, String>
     ])
     .await?;
     let header_matches = search_library_names(&by_header);
-    if let Some(package) = exact_library_name(header, &header_matches) {
+    if let Some(package) = preferred_library_name(header, &header_matches) {
         return Ok(Some(package));
     }
     if header_matches.len() == 1 {
@@ -844,7 +863,7 @@ async fn process_library_queue(app: AppHandle, fqbn: String, headers: Vec<String
         "list".to_owned(),
         "--all".to_owned(),
         "--fqbn".to_owned(),
-        fqbn,
+        fqbn.clone(),
         "--json".to_owned(),
     ])
     .await;
@@ -866,14 +885,13 @@ async fn process_library_queue(app: AppHandle, fqbn: String, headers: Vec<String
 
     let mut missing_headers = Vec::new();
     for header in headers {
-        let lower_header = header.to_ascii_lowercase();
         if is_core_or_system_header(&header) {
             if let Ok(mut statuses) = app.state::<LibraryState>().statuses.lock() {
                 statuses.insert(header, "available".to_owned());
             }
             continue;
         }
-        if installed_headers.contains(&lower_header) {
+        if installed_headers.contains(&header) {
             emit_library_status(
                 &app,
                 &header,
@@ -896,7 +914,6 @@ async fn process_library_queue(app: AppHandle, fqbn: String, headers: Vec<String
     }
 
     for header in missing_headers {
-        let lower_header = header.to_ascii_lowercase();
         emit_library_status(
             &app,
             &header,
@@ -928,30 +945,62 @@ async fn process_library_queue(app: AppHandle, fqbn: String, headers: Vec<String
         };
 
         if installed_packages.contains(&package.to_ascii_lowercase()) {
-            emit_library_status(
-                &app,
-                &header,
-                &package,
-                "installed",
-                100,
-                "Library is already installed.",
+            let message = format!(
+                "{package} is installed, but Arduino CLI does not report the exact header {header}."
             );
-            installed_headers.insert(lower_header);
+            emit_tool_line(&app, "library", "stderr", &message);
+            emit_library_status(&app, &header, &package, "failed", 100, &message);
             continue;
         }
 
         match install_library_package(&app, &header, &package).await {
             Ok(()) => {
-                installed_packages.insert(package.to_ascii_lowercase());
-                installed_headers.insert(lower_header);
-                emit_library_status(
-                    &app,
-                    &header,
-                    &package,
-                    "installed",
-                    100,
-                    "Package installed successfully.",
-                );
+                let refreshed = run_arduino_cli_json(&[
+                    "lib".to_owned(),
+                    "list".to_owned(),
+                    "--all".to_owned(),
+                    "--fqbn".to_owned(),
+                    fqbn.clone(),
+                    "--json".to_owned(),
+                ])
+                .await;
+                match refreshed {
+                    Ok(value) => {
+                        let (headers, packages) = installed_library_index(&value);
+                        installed_headers = headers;
+                        installed_packages = packages;
+                        if installed_headers.contains(&header) {
+                            emit_library_status(
+                                &app,
+                                &header,
+                                &package,
+                                "installed",
+                                100,
+                                "Package installed successfully.",
+                            );
+                        } else {
+                            let case_mismatch = installed_headers
+                                .iter()
+                                .find(|installed| installed.eq_ignore_ascii_case(&header));
+                            let message = match case_mismatch {
+                                Some(installed) => format!(
+                                    "Installed {package}, but it provides {installed} instead of the case-sensitive header {header}."
+                                ),
+                                None => format!(
+                                    "Installed {package}, but Arduino CLI does not report that it provides {header}."
+                                ),
+                            };
+                            emit_tool_line(&app, "library", "stderr", &message);
+                            emit_library_status(&app, &header, &package, "failed", 100, &message);
+                        }
+                    }
+                    Err(error) => {
+                        let message =
+                            format!("Installed {package}, but could not verify {header}: {error}");
+                        emit_tool_line(&app, "library", "stderr", &message);
+                        emit_library_status(&app, &header, &package, "failed", 100, &message);
+                    }
+                }
             }
             Err(error) => {
                 emit_library_status(&app, &header, &package, "failed", 100, &error);
@@ -1862,8 +1911,9 @@ mod tests {
             }]
         });
         let (headers, packages) = installed_library_index(&value);
-        assert!(headers.contains("wifi.h"));
-        assert!(headers.contains("wificlient.h"));
+        assert!(headers.contains("WiFi.h"));
+        assert!(headers.contains("WiFiClient.h"));
+        assert!(!headers.contains("wifi.h"));
         assert!(packages.contains("wifi"));
     }
 
@@ -1891,6 +1941,20 @@ mod tests {
         assert_eq!(
             exact_library_name("Adafruit_GFX.h", &["Adafruit GFX Library".to_owned()]),
             Some("Adafruit GFX Library".to_owned())
+        );
+    }
+
+    #[test]
+    fn prefers_the_dht_sensor_library_over_lowercase_dhtlib() {
+        let candidates = vec![
+            "DHTlib".to_owned(),
+            "DHT11".to_owned(),
+            "DHT sensor library".to_owned(),
+            "DHT Sensors Non-Blocking".to_owned(),
+        ];
+        assert_eq!(
+            preferred_library_name("DHT.h", &candidates),
+            Some("DHT sensor library".to_owned())
         );
     }
 
