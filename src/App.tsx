@@ -1127,6 +1127,7 @@ function App() {
                           <Suspense fallback={<div className="grid h-full place-items-center text-xs text-zinc-600">Loading blocks…</div>}>
                             <BlockEditor
                               active={editorView === "blocks"}
+                              code={code}
                               onCodeChange={(generated) => {
                                 if (!generated || generated === code) return;
                                 setCode(generated);

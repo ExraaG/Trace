@@ -89,8 +89,8 @@ The release workflow builds an x86_64 Linux AppImage and DEB, Intel and Apple Si
 When version numbers in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` match, publish with:
 
 ```sh
-git tag v0.3.1
-git push origin v0.3.1
+git tag v<version>
+git push origin v<version>
 ```
 
 GitHub Actions creates the release and uploads all platform installers. Once that workflow finishes, the one-command installers above use the newest published release automatically.
@@ -99,7 +99,7 @@ GitHub Actions creates the release and uploads all platform installers. Once tha
 
 1. Connect a board over USB and select its name and port in the toolbar. Use refresh if it was connected after Trace opened. Hidden family/template definitions are ignored; ambiguous devices require a concrete installed board choice. If automatic detection chooses incorrectly, select **Wrong board?**, search for the installed board model, and Trace will remember that correction for the device's USB identity.
 2. Use the sliders button beside the board picker to review platform-provided options such as flash size, partition scheme, PSRAM, or upload mode. Trace uses platform defaults unless you select another value.
-3. Open an existing `.ino` file or edit the starter sketch. Saving is optional for compilation. Select **Blocks** beside **Code** above the editor to build a sketch visually; connected blocks generate the same `.ino` buffer used by compile and upload.
+3. Open an existing `.ino` file or edit the starter sketch. Saving is optional for compilation. Select **Blocks** beside **Code** above the editor to build a sketch visually. Code and blocks synchronize live in both directions. Supported Arduino statements become visual blocks, while C++ without a matching block remains editable in a **Custom code** block so conversion never silently drops it.
 4. Select **Compile**. Trace validates expanded build recipes and partition files before starting, then streams `arduino-cli` output into the build panel.
 5. After a successful compile, select **Upload**. Upload remains disabled until that session has a successful, current compile.
 6. Connect the serial console, select a baud rate (115200 by default), and send or receive newline-delimited data.

@@ -1,6 +1,6 @@
 [package]
 name = "trace"
-version = "0.3.1"
+version = "0.3.2"
 description = "A modern ESP32 and Arduino desktop IDE"
 authors = ["Trace contributors"]
 edition = "2021"

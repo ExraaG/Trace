@@ -5,6 +5,7 @@ import {
   arduinoToolbox,
   createStarterBlocks,
   generateArduinoCode,
+  loadArduinoCode,
   registerArduinoBlocks,
 } from "../blocks/arduino";
 
@@ -18,6 +19,7 @@ const traceBlocklyTheme = Blockly.Theme.defineTheme("trace-blocks", {
     trace_timing_blocks: { colourPrimary: "#ca8a04", colourSecondary: "#a16207", colourTertiary: "#854d0e" },
     trace_control_blocks: { colourPrimary: "#7c3aed", colourSecondary: "#6d28d9", colourTertiary: "#5b21b6" },
     trace_serial_blocks: { colourPrimary: "#0891b2", colourSecondary: "#0e7490", colourTertiary: "#155e75" },
+    trace_advanced_blocks: { colourPrimary: "#475569", colourSecondary: "#334155", colourTertiary: "#1e293b" },
   },
   componentStyles: {
     workspaceBackgroundColour: "#09090b",
@@ -38,14 +40,19 @@ const traceBlocklyTheme = Blockly.Theme.defineTheme("trace-blocks", {
 
 interface BlockEditorProps {
   active: boolean;
+  code: string;
   onCodeChange: (code: string) => void;
 }
 
-export function BlockEditor({ active, onCodeChange }: BlockEditorProps) {
+export function BlockEditor({ active, code, onCodeChange }: BlockEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const workspaceRef = useRef<Blockly.WorkspaceSvg | null>(null);
   const onCodeChangeRef = useRef(onCodeChange);
+  const codeRef = useRef(code);
+  const applyingCodeRef = useRef(false);
+  const lastGeneratedCodeRef = useRef<string | null>(null);
   onCodeChangeRef.current = onCodeChange;
+  codeRef.current = code;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -63,16 +70,21 @@ export function BlockEditor({ active, onCodeChange }: BlockEditorProps) {
       grid: { spacing: 24, length: 2, colour: "#27272a", snap: true },
     });
     workspaceRef.current = workspace;
-    createStarterBlocks(workspace);
+    applyingCodeRef.current = true;
+    loadArduinoCode(workspace, codeRef.current);
+    applyingCodeRef.current = false;
 
     let generateTimer: number | null = null;
     const handleChange = (event: Blockly.Events.Abstract) => {
-      if (event.isUiEvent || event.type === Blockly.Events.FINISHED_LOADING) return;
+      if (applyingCodeRef.current || event.isUiEvent || event.type === Blockly.Events.FINISHED_LOADING) return;
       if (generateTimer !== null) window.clearTimeout(generateTimer);
       generateTimer = window.setTimeout(() => {
         generateTimer = null;
         const generated = generateArduinoCode(workspace);
-        if (generated) onCodeChangeRef.current(generated);
+        if (generated) {
+          lastGeneratedCodeRef.current = generated;
+          onCodeChangeRef.current(generated);
+        }
       }, 40);
     };
     workspace.addChangeListener(handleChange);
@@ -92,6 +104,21 @@ export function BlockEditor({ active, onCodeChange }: BlockEditorProps) {
 
   useEffect(() => {
     const workspace = workspaceRef.current;
+    if (!workspace || code === lastGeneratedCodeRef.current) return;
+    const timer = window.setTimeout(() => {
+      applyingCodeRef.current = true;
+      try {
+        loadArduinoCode(workspace, code);
+        if (active) Blockly.svgResize(workspace);
+      } finally {
+        applyingCodeRef.current = false;
+      }
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [active, code]);
+
+  useEffect(() => {
+    const workspace = workspaceRef.current;
     if (!active || !workspace) return;
     const frame = window.requestAnimationFrame(() => Blockly.svgResize(workspace));
     return () => window.cancelAnimationFrame(frame);
@@ -101,14 +128,16 @@ export function BlockEditor({ active, onCodeChange }: BlockEditorProps) {
     const workspace = workspaceRef.current;
     if (!workspace) return;
     createStarterBlocks(workspace);
-    onCodeChangeRef.current(generateArduinoCode(workspace));
+    const generated = generateArduinoCode(workspace);
+    lastGeneratedCodeRef.current = generated;
+    onCodeChangeRef.current(generated);
     Blockly.svgResize(workspace);
   };
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-[#09090b]">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line bg-[#0d0d10] px-3 text-[11px] text-zinc-500">
-        <span>Drag blocks into “run once” or “repeat forever”. Generated Arduino code updates the Code tab.</span>
+        <span>Live sync · Code edits become blocks, and block edits update the same sketch.</span>
         <button className="panel-action ml-auto flex items-center gap-1" onClick={resetBlocks} title="Reset the visual sketch">
           <RotateCcw size={11} /> Reset blocks
         </button>
