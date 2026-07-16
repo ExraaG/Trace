@@ -42,12 +42,160 @@ const blockDefinitions = [
   },
   {
     type: "trace_raw_code",
-    message0: "custom code %1",
+    message0: "unparsed C++ %1",
     args0: [{ type: "field_multilinetext", name: "CODE", text: "// Arduino C++" }],
     previousStatement: null,
     nextStatement: null,
     style: "trace_advanced_blocks",
     tooltip: "C++ that Trace preserves when there is no matching visual block.",
+  },
+  {
+    type: "trace_directive",
+    message0: "preprocessor #%1",
+    args0: [{ type: "field_input", name: "DIRECTIVE", text: "define LED_PIN 2" }],
+    previousStatement: null,
+    nextStatement: null,
+    style: "trace_code_blocks",
+    tooltip: "A preprocessor directive such as define, ifdef, or pragma.",
+  },
+  {
+    type: "trace_comment",
+    message0: "%1 comment %2",
+    args0: [
+      { type: "field_dropdown", name: "STYLE", options: [["line", "LINE"], ["block", "BLOCK"]] },
+      { type: "field_multilinetext", name: "TEXT", text: "Explain this code" },
+    ],
+    previousStatement: null,
+    nextStatement: null,
+    style: "trace_code_blocks",
+    tooltip: "A comment retained in the generated sketch.",
+  },
+  {
+    type: "trace_declaration",
+    message0: "declare %1 %2",
+    args0: [
+      { type: "field_input", name: "TYPE", text: "int" },
+      { type: "field_input", name: "NAME", text: "value" },
+    ],
+    message1: "initial value %1",
+    args1: [{ type: "field_multilinetext", name: "VALUE", text: "0" }],
+    previousStatement: null,
+    nextStatement: null,
+    style: "trace_variable_blocks",
+    tooltip: "Declare a variable or construct an object. Leave initial value empty for no initializer.",
+  },
+  {
+    type: "trace_assignment",
+    message0: "set %1 %2 %3",
+    args0: [
+      { type: "field_input", name: "TARGET", text: "value" },
+      {
+        type: "field_dropdown",
+        name: "OPERATOR",
+        options: [["=", "="], ["+=", "+="], ["-=", "-="], ["*=", "*="], ["/=", "/="], ["%=", "%="], ["|=", "|="], ["&=", "&="], ["^=", "^="], ["<<=", "<<="], [">>=", ">>="]],
+      },
+      { type: "field_multilinetext", name: "VALUE", text: "0" },
+    ],
+    previousStatement: null,
+    nextStatement: null,
+    style: "trace_variable_blocks",
+    tooltip: "Assign an expression to a variable, field, pointer member, or array element.",
+  },
+  {
+    type: "trace_update",
+    message0: "%1 %2 %3",
+    args0: [
+      { type: "field_dropdown", name: "POSITION", options: [["after", "POSTFIX"], ["before", "PREFIX"]] },
+      { type: "field_input", name: "TARGET", text: "value" },
+      { type: "field_dropdown", name: "OPERATOR", options: [["increase", "++"], ["decrease", "--"]] },
+    ],
+    previousStatement: null,
+    nextStatement: null,
+    style: "trace_variable_blocks",
+    tooltip: "Increase or decrease a value by one.",
+  },
+  {
+    type: "trace_call",
+    message0: "call %1",
+    args0: [{ type: "field_input", name: "CALLEE", text: "object.method" }],
+    message1: "arguments %1",
+    args1: [{ type: "field_multilinetext", name: "ARGUMENTS", text: "" }],
+    previousStatement: null,
+    nextStatement: null,
+    style: "trace_function_blocks",
+    tooltip: "Call any Arduino, library, object, or C++ function.",
+  },
+  {
+    type: "trace_return",
+    message0: "return %1",
+    args0: [{ type: "field_multilinetext", name: "VALUE", text: "" }],
+    previousStatement: null,
+    nextStatement: null,
+    style: "trace_function_blocks",
+    tooltip: "Return from the current function, optionally with a value.",
+  },
+  {
+    type: "trace_flow",
+    message0: "%1 loop",
+    args0: [{ type: "field_dropdown", name: "ACTION", options: [["break out of", "break"], ["continue", "continue"]] }],
+    previousStatement: null,
+    nextStatement: null,
+    style: "trace_control_blocks",
+    tooltip: "Break out of a loop or continue with its next iteration.",
+  },
+  {
+    type: "trace_if",
+    message0: "if expression %1",
+    args0: [{ type: "field_multilinetext", name: "CONDITION", text: "value > 0" }],
+    message1: "do %1",
+    args1: [{ type: "input_statement", name: "DO" }],
+    message2: "else %1",
+    args2: [{ type: "input_statement", name: "ELSE" }],
+    previousStatement: null,
+    nextStatement: null,
+    style: "trace_control_blocks",
+    tooltip: "Run one block stack when an expression is true and another when it is false.",
+  },
+  {
+    type: "trace_while",
+    message0: "while expression %1",
+    args0: [{ type: "field_multilinetext", name: "CONDITION", text: "value > 0" }],
+    message1: "do %1",
+    args1: [{ type: "input_statement", name: "DO" }],
+    previousStatement: null,
+    nextStatement: null,
+    style: "trace_control_blocks",
+    tooltip: "Repeat blocks while a C++ expression is true.",
+  },
+  {
+    type: "trace_for",
+    message0: "for %1 ; %2 ; %3",
+    args0: [
+      { type: "field_input", name: "INITIALIZER", text: "int i = 0" },
+      { type: "field_input", name: "CONDITION", text: "i < 10" },
+      { type: "field_input", name: "UPDATE", text: "i++" },
+    ],
+    message1: "do %1",
+    args1: [{ type: "input_statement", name: "DO" }],
+    previousStatement: null,
+    nextStatement: null,
+    style: "trace_control_blocks",
+    tooltip: "A general C++ for loop.",
+  },
+  {
+    type: "trace_function",
+    message0: "function %1 %2 ( %3 )",
+    args0: [
+      { type: "field_input", name: "RETURN_TYPE", text: "void" },
+      { type: "field_input", name: "NAME", text: "helper" },
+      { type: "field_input", name: "PARAMETERS", text: "" },
+    ],
+    message1: "do %1",
+    args1: [{ type: "input_statement", name: "DO" }],
+    previousStatement: null,
+    nextStatement: null,
+    style: "trace_function_blocks",
+    tooltip: "Define a reusable C++ function.",
   },
   {
     type: "trace_pin_mode",
@@ -176,6 +324,30 @@ export const arduinoToolbox = {
       contents: [
         { kind: "block", type: "trace_repeat" },
         { kind: "block", type: "trace_if_digital" },
+        { kind: "block", type: "trace_if" },
+        { kind: "block", type: "trace_while" },
+        { kind: "block", type: "trace_for" },
+        { kind: "block", type: "trace_flow" },
+      ],
+    },
+    {
+      kind: "category",
+      name: "Variables",
+      colour: "#2563eb",
+      contents: [
+        { kind: "block", type: "trace_declaration" },
+        { kind: "block", type: "trace_assignment" },
+        { kind: "block", type: "trace_update" },
+      ],
+    },
+    {
+      kind: "category",
+      name: "Functions",
+      colour: "#0d9488",
+      contents: [
+        { kind: "block", type: "trace_call" },
+        { kind: "block", type: "trace_function" },
+        { kind: "block", type: "trace_return" },
       ],
     },
     {
@@ -193,6 +365,8 @@ export const arduinoToolbox = {
       colour: "#64748b",
       contents: [
         { kind: "block", type: "trace_include" },
+        { kind: "block", type: "trace_directive" },
+        { kind: "block", type: "trace_comment" },
         { kind: "block", type: "trace_raw_code" },
       ],
     },
@@ -258,6 +432,57 @@ function registerGenerators() {
     return block.getFieldValue("STYLE") === "QUOTE" ? `#include "${header}"\n` : `#include <${header}>\n`;
   };
   arduinoGenerator.forBlock.trace_raw_code = (block) => withTrailingNewline(String(block.getFieldValue("CODE") ?? ""));
+  arduinoGenerator.forBlock.trace_directive = (block) => `#${String(block.getFieldValue("DIRECTIVE") ?? "").trim()}\n`;
+  arduinoGenerator.forBlock.trace_comment = (block) => {
+    const content = String(block.getFieldValue("TEXT") ?? "");
+    if (block.getFieldValue("STYLE") === "BLOCK") return `/* ${content} */\n`;
+    return content.split(/\r?\n/).map((line) => `// ${line}`).join("\n") + "\n";
+  };
+  arduinoGenerator.forBlock.trace_declaration = (block) => {
+    const typeName = String(block.getFieldValue("TYPE") ?? "int").trim();
+    const name = String(block.getFieldValue("NAME") ?? "value").trim();
+    const initializer = String(block.getFieldValue("VALUE") ?? "").trim();
+    const initialized = initializer
+      ? initializer.startsWith("(") || initializer.startsWith("{") ? `${name}${initializer}` : `${name} = ${initializer}`
+      : name;
+    return `${typeName} ${initialized};\n`;
+  };
+  arduinoGenerator.forBlock.trace_assignment = (block) =>
+    `${String(block.getFieldValue("TARGET") ?? "value").trim()} ${block.getFieldValue("OPERATOR")} ${String(block.getFieldValue("VALUE") ?? "0").trim()};\n`;
+  arduinoGenerator.forBlock.trace_update = (block) => {
+    const target = String(block.getFieldValue("TARGET") ?? "value").trim();
+    const operator = String(block.getFieldValue("OPERATOR") ?? "++");
+    return block.getFieldValue("POSITION") === "PREFIX" ? `${operator}${target};\n` : `${target}${operator};\n`;
+  };
+  arduinoGenerator.forBlock.trace_call = (block) =>
+    `${String(block.getFieldValue("CALLEE") ?? "function").trim()}(${String(block.getFieldValue("ARGUMENTS") ?? "").trim()});\n`;
+  arduinoGenerator.forBlock.trace_return = (block) => {
+    const value = String(block.getFieldValue("VALUE") ?? "").trim();
+    return value ? `return ${value};\n` : "return;\n";
+  };
+  arduinoGenerator.forBlock.trace_flow = (block) => `${block.getFieldValue("ACTION")};\n`;
+  arduinoGenerator.forBlock.trace_if = (block, generator) => {
+    const condition = String(block.getFieldValue("CONDITION") ?? "true").trim() || "true";
+    const body = nestedStatements(generator, block, "DO");
+    const elseBody = generator.statementToCode(block, "ELSE");
+    return elseBody ? `if (${condition}) {\n${body}} else {\n${elseBody}}\n` : `if (${condition}) {\n${body}}\n`;
+  };
+  arduinoGenerator.forBlock.trace_while = (block, generator) => {
+    const condition = String(block.getFieldValue("CONDITION") ?? "true").trim() || "true";
+    return `while (${condition}) {\n${nestedStatements(generator, block, "DO")}}\n`;
+  };
+  arduinoGenerator.forBlock.trace_for = (block, generator) => {
+    const initializer = String(block.getFieldValue("INITIALIZER") ?? "").trim();
+    const condition = String(block.getFieldValue("CONDITION") ?? "").trim();
+    const update = String(block.getFieldValue("UPDATE") ?? "").trim();
+    return `for (${initializer}; ${condition}; ${update}) {\n${nestedStatements(generator, block, "DO")}}\n`;
+  };
+  arduinoGenerator.forBlock.trace_function = (block, generator) => {
+    const returnType = String(block.getFieldValue("RETURN_TYPE") ?? "void").trim() || "void";
+    const name = String(block.getFieldValue("NAME") ?? "helper").trim() || "helper";
+    const parameters = String(block.getFieldValue("PARAMETERS") ?? "").trim();
+    return `${returnType} ${name}(${parameters}) {\n${nestedStatements(generator, block, "DO")}}\n`;
+  };
   arduinoGenerator.forBlock.trace_pin_mode = (block) =>
     `pinMode(${safePin(block)}, ${block.getFieldValue("MODE")});\n`;
   arduinoGenerator.forBlock.trace_digital_write = (block) =>
@@ -312,6 +537,46 @@ function blocksFromStatements(workspace: Blockly.WorkspaceSvg, statements: Ardui
         block.setFieldValue(statement.quoted ? "QUOTE" : "ANGLE", "STYLE");
         block.setFieldValue(statement.header, "HEADER");
         return block;
+      case "directive":
+        block = makeBlock(workspace, "trace_directive");
+        block.setFieldValue(statement.directive, "DIRECTIVE");
+        return block;
+      case "comment":
+        block = makeBlock(workspace, "trace_comment");
+        block.setFieldValue(statement.block ? "BLOCK" : "LINE", "STYLE");
+        block.setFieldValue(statement.text, "TEXT");
+        return block;
+      case "declaration":
+        block = makeBlock(workspace, "trace_declaration");
+        block.setFieldValue(statement.typeName, "TYPE");
+        block.setFieldValue(statement.name, "NAME");
+        block.setFieldValue(statement.initializer, "VALUE");
+        return block;
+      case "assignment":
+        block = makeBlock(workspace, "trace_assignment");
+        block.setFieldValue(statement.target, "TARGET");
+        block.setFieldValue(statement.operator, "OPERATOR");
+        block.setFieldValue(statement.value, "VALUE");
+        return block;
+      case "update":
+        block = makeBlock(workspace, "trace_update");
+        block.setFieldValue(statement.prefix ? "PREFIX" : "POSTFIX", "POSITION");
+        block.setFieldValue(statement.target, "TARGET");
+        block.setFieldValue(statement.operator, "OPERATOR");
+        return block;
+      case "call":
+        block = makeBlock(workspace, "trace_call");
+        block.setFieldValue(statement.callee, "CALLEE");
+        block.setFieldValue(statement.arguments, "ARGUMENTS");
+        return block;
+      case "return":
+        block = makeBlock(workspace, "trace_return");
+        block.setFieldValue(statement.value, "VALUE");
+        return block;
+      case "flow":
+        block = makeBlock(workspace, "trace_flow");
+        block.setFieldValue(statement.action, "ACTION");
+        return block;
       case "pinMode":
         block = makeBlock(workspace, "trace_pin_mode");
         block.setFieldValue(statement.pin, "PIN");
@@ -348,6 +613,31 @@ function blocksFromStatements(workspace: Blockly.WorkspaceSvg, statements: Ardui
         block = makeBlock(workspace, "trace_if_digital");
         block.setFieldValue(statement.pin, "PIN");
         block.setFieldValue(statement.state, "STATE");
+        connectStack(block.getInput("DO")?.connection ?? null, blocksFromStatements(workspace, statement.statements));
+        return block;
+      case "if":
+        block = makeBlock(workspace, "trace_if");
+        block.setFieldValue(statement.condition, "CONDITION");
+        connectStack(block.getInput("DO")?.connection ?? null, blocksFromStatements(workspace, statement.statements));
+        connectStack(block.getInput("ELSE")?.connection ?? null, blocksFromStatements(workspace, statement.elseStatements));
+        return block;
+      case "while":
+        block = makeBlock(workspace, "trace_while");
+        block.setFieldValue(statement.condition, "CONDITION");
+        connectStack(block.getInput("DO")?.connection ?? null, blocksFromStatements(workspace, statement.statements));
+        return block;
+      case "for":
+        block = makeBlock(workspace, "trace_for");
+        block.setFieldValue(statement.initializer, "INITIALIZER");
+        block.setFieldValue(statement.condition, "CONDITION");
+        block.setFieldValue(statement.update, "UPDATE");
+        connectStack(block.getInput("DO")?.connection ?? null, blocksFromStatements(workspace, statement.statements));
+        return block;
+      case "function":
+        block = makeBlock(workspace, "trace_function");
+        block.setFieldValue(statement.returnType, "RETURN_TYPE");
+        block.setFieldValue(statement.name, "NAME");
+        block.setFieldValue(statement.parameters, "PARAMETERS");
         connectStack(block.getInput("DO")?.connection ?? null, blocksFromStatements(workspace, statement.statements));
         return block;
       case "raw":

@@ -19,6 +19,9 @@ const traceBlocklyTheme = Blockly.Theme.defineTheme("trace-blocks", {
     trace_timing_blocks: { colourPrimary: "#ca8a04", colourSecondary: "#a16207", colourTertiary: "#854d0e" },
     trace_control_blocks: { colourPrimary: "#7c3aed", colourSecondary: "#6d28d9", colourTertiary: "#5b21b6" },
     trace_serial_blocks: { colourPrimary: "#0891b2", colourSecondary: "#0e7490", colourTertiary: "#155e75" },
+    trace_variable_blocks: { colourPrimary: "#2563eb", colourSecondary: "#1d4ed8", colourTertiary: "#1e40af" },
+    trace_function_blocks: { colourPrimary: "#0d9488", colourSecondary: "#0f766e", colourTertiary: "#115e59" },
+    trace_code_blocks: { colourPrimary: "#64748b", colourSecondary: "#475569", colourTertiary: "#334155" },
     trace_advanced_blocks: { colourPrimary: "#475569", colourSecondary: "#334155", colourTertiary: "#1e293b" },
   },
   componentStyles: {

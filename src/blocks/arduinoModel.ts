@@ -3,6 +3,14 @@ export type DigitalState = "HIGH" | "LOW";
 
 export type ArduinoStatement =
   | { kind: "include"; header: string; quoted: boolean }
+  | { kind: "directive"; directive: string }
+  | { kind: "comment"; text: string; block: boolean }
+  | { kind: "declaration"; typeName: string; name: string; initializer: string }
+  | { kind: "assignment"; target: string; operator: string; value: string }
+  | { kind: "update"; target: string; operator: "++" | "--"; prefix: boolean }
+  | { kind: "call"; callee: string; arguments: string }
+  | { kind: "return"; value: string }
+  | { kind: "flow"; action: "break" | "continue" }
   | { kind: "pinMode"; pin: string; mode: PinMode }
   | { kind: "digitalWrite"; pin: string; state: DigitalState }
   | { kind: "analogWrite"; pin: string; value: number }
@@ -11,6 +19,10 @@ export type ArduinoStatement =
   | { kind: "serialPrintln"; text: string }
   | { kind: "repeat"; times: number; statements: ArduinoStatement[] }
   | { kind: "ifDigital"; pin: string; state: DigitalState; statements: ArduinoStatement[] }
+  | { kind: "if"; condition: string; statements: ArduinoStatement[]; elseStatements: ArduinoStatement[] }
+  | { kind: "while"; condition: string; statements: ArduinoStatement[] }
+  | { kind: "for"; initializer: string; condition: string; update: string; statements: ArduinoStatement[] }
+  | { kind: "function"; returnType: string; name: string; parameters: string; statements: ArduinoStatement[] }
   | { kind: "raw"; code: string };
 
 export type ArduinoProgram =
@@ -184,10 +196,48 @@ function parseControlBody(chunk: string): { header: string; body: string } | nul
   return { header: chunk.slice(0, openingBrace).trim(), body: chunk.slice(openingBrace + 1, end) };
 }
 
+function parseIfBody(chunk: string): { condition: string; body: string; elseBody: string } | null {
+  const masked = maskCommentsAndStrings(chunk);
+  const openingBrace = masked.indexOf("{");
+  if (openingBrace === -1) return null;
+  const bodyEnd = closingBrace(masked, openingBrace);
+  if (bodyEnd === null) return null;
+  const header = chunk.slice(0, openingBrace).trim();
+  const match = header.match(/^if\s*\((.*)\)$/s);
+  if (!match) return null;
+
+  const suffixStart = skipWhitespace(chunk, bodyEnd + 1);
+  if (suffixStart >= chunk.length) {
+    return { condition: match[1].trim(), body: chunk.slice(openingBrace + 1, bodyEnd), elseBody: "" };
+  }
+  if (!chunk.startsWith("else", suffixStart)) return null;
+  const elseStart = skipWhitespace(chunk, suffixStart + 4);
+  if (chunk[elseStart] === "{") {
+    const elseEnd = closingBrace(masked, elseStart);
+    if (elseEnd === null || chunk.slice(elseEnd + 1).trim()) return null;
+    return {
+      condition: match[1].trim(),
+      body: chunk.slice(openingBrace + 1, bodyEnd),
+      elseBody: chunk.slice(elseStart + 1, elseEnd),
+    };
+  }
+  return {
+    condition: match[1].trim(),
+    body: chunk.slice(openingBrace + 1, bodyEnd),
+    elseBody: chunk.slice(elseStart),
+  };
+}
+
 function parseChunk(chunk: string): ArduinoStatement {
   const code = chunk.trim();
   let match = code.match(/^#\s*include\s*([<"])([^>"]+)[>"]$/);
   if (match) return { kind: "include", header: match[2].trim(), quoted: match[1] === '"' };
+
+  if (code.startsWith("#")) return { kind: "directive", directive: code.slice(1).trim() };
+  if (code.startsWith("//")) return { kind: "comment", text: code.slice(2).trim(), block: false };
+  if (code.startsWith("/*") && code.endsWith("*/")) {
+    return { kind: "comment", text: code.slice(2, -2).trim(), block: true };
+  }
 
   match = code.match(/^pinMode\s*\(\s*([A-Za-z_]\w*|\d+)\s*,\s*(OUTPUT|INPUT|INPUT_PULLUP)\s*\)\s*;$/);
   if (match) return { kind: "pinMode", pin: match[1], mode: match[2] as PinMode };
@@ -211,19 +261,82 @@ function parseChunk(chunk: string): ArduinoStatement {
     if (text !== null) return { kind: "serialPrintln", text };
   }
 
+  if (code === "break;" || code === "continue;") {
+    return { kind: "flow", action: code.slice(0, -1) as "break" | "continue" };
+  }
+
+  match = code.match(/^return(?:\s+(.+?))?\s*;$/s);
+  if (match) return { kind: "return", value: match[1]?.trim() ?? "" };
+
+  const parsedIf = parseIfBody(code);
+  if (parsedIf) {
+    match = parsedIf.condition.match(/^digitalRead\s*\(\s*([A-Za-z_]\w*|\d+)\s*\)\s*==\s*(HIGH|LOW)$/);
+    if (match && !parsedIf.elseBody.trim()) return {
+      kind: "ifDigital",
+      pin: match[1],
+      state: match[2] as DigitalState,
+      statements: parseStatements(parsedIf.body),
+    };
+    return {
+      kind: "if",
+      condition: parsedIf.condition,
+      statements: parseStatements(parsedIf.body),
+      elseStatements: parseStatements(parsedIf.elseBody),
+    };
+  }
+
   const control = parseControlBody(code);
   if (control) {
     match = control.header.match(/^for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*0\s*;\s*\1\s*<\s*(\d+)\s*;\s*\1\s*\+\+\s*\)$/);
     if (match) return { kind: "repeat", times: Number(match[2]), statements: parseStatements(control.body) };
 
-    match = control.header.match(/^if\s*\(\s*digitalRead\s*\(\s*([A-Za-z_]\w*|\d+)\s*\)\s*==\s*(HIGH|LOW)\s*\)$/);
+    match = control.header.match(/^while\s*\((.*)\)$/s);
+    if (match) return { kind: "while", condition: match[1].trim(), statements: parseStatements(control.body) };
+
+    match = control.header.match(/^for\s*\((.*?);(.*?);(.*?)\)$/s);
     if (match) return {
-      kind: "ifDigital",
-      pin: match[1],
-      state: match[2] as DigitalState,
+      kind: "for",
+      initializer: match[1].trim(),
+      condition: match[2].trim(),
+      update: match[3].trim(),
+      statements: parseStatements(control.body),
+    };
+
+    match = control.header.match(/^(.+?)\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*\((.*)\)$/s);
+    if (match) return {
+      kind: "function",
+      returnType: match[1].trim(),
+      name: match[2].trim(),
+      parameters: match[3].trim(),
       statements: parseStatements(control.body),
     };
   }
+
+  match = code.match(/^(.+?)\s+([*&]*\s*)([A-Za-z_]\w*(?:\s*\[[^\]]*\])?)\s*((?:=\s*.*?)|(?:\([^;]*\))|(?:\{.*\}))?\s*;$/s);
+  if (match) {
+    const typeName = `${match[1].trim()}${match[2].trim() ? ` ${match[2].trim()}` : ""}`;
+    const initialization = match[4]?.trim() ?? "";
+    if (!/[=+/%!?|]/.test(typeName) && !typeName.includes("->")) return {
+      kind: "declaration",
+      typeName,
+      name: match[3].replace(/\s+/g, ""),
+      initializer: initialization.startsWith("=") ? initialization.slice(1).trim() : initialization,
+    };
+  }
+
+  match = code.match(/^((?:[A-Za-z_]\w*|\d+)(?:(?:\.|->|::)[A-Za-z_]\w*|\[[^\]]+\])*)\s*(=|\+=|-=|\*=|\/=|%=|\|=|&=|\^=|<<=|>>=)\s*(.*?)\s*;$/s);
+  if (match) return { kind: "assignment", target: match[1], operator: match[2], value: match[3] };
+
+  match = code.match(/^(?:(\+\+|--)\s*((?:[A-Za-z_]\w*)(?:\[[^\]]+\]|(?:\.|->)[A-Za-z_]\w*)*)|((?:[A-Za-z_]\w*)(?:\[[^\]]+\]|(?:\.|->)[A-Za-z_]\w*)*)\s*(\+\+|--))\s*;$/);
+  if (match) return {
+    kind: "update",
+    target: match[2] ?? match[3],
+    operator: (match[1] ?? match[4]) as "++" | "--",
+    prefix: Boolean(match[1]),
+  };
+
+  match = code.match(/^((?:[A-Za-z_]\w*)(?:(?:\.|->|::)[A-Za-z_]\w*)*)\s*\((.*)\)\s*;$/s);
+  if (match) return { kind: "call", callee: match[1], arguments: match[2].trim() };
 
   return { kind: "raw", code };
 }
@@ -258,4 +371,3 @@ export function parseArduinoCode(source: string): ArduinoProgram {
     afterLoop: parseStatements(source.slice(loop.end)),
   };
 }
-
