@@ -1,5 +1,6 @@
 import * as Blockly from "blockly/core";
 import * as En from "blockly/msg/en";
+import { FieldMultilineInput, registerFieldMultilineInput } from "@blockly/field-multilineinput";
 import { parseArduinoCode, type ArduinoStatement } from "./arduinoModel";
 
 let registered = false;
@@ -507,16 +508,20 @@ function registerGenerators() {
 export function registerArduinoBlocks() {
   if (registered) return;
   Blockly.setLocale(En as unknown as Record<string, string>);
+  registerFieldMultilineInput();
+  FieldMultilineInput.enterCommits = false;
+  FieldMultilineInput.showHint = false;
   Blockly.defineBlocksWithJsonArray(blockDefinitions);
   registerGenerators();
   registered = true;
 }
 
-function connectStack(parent: Blockly.Connection | null, blocks: Blockly.BlockSvg[]) {
+function connectStack(parent: Blockly.Connection | null, blocks: Blockly.Block[]) {
   let connection = parent;
   for (const block of blocks) {
-    if (!connection || !block.previousConnection) break;
-    connection.connect(block.previousConnection);
+    if (!connection || !block.previousConnection || !connection.connect(block.previousConnection)) {
+      throw new Error(`Could not connect generated ${block.type} block to its Arduino section.`);
+    }
     connection = block.nextConnection;
   }
 }
@@ -528,152 +533,173 @@ function makeBlock(workspace: Blockly.WorkspaceSvg, type: string): Blockly.Block
   return block;
 }
 
-function blocksFromStatements(workspace: Blockly.WorkspaceSvg, statements: ArduinoStatement[]): Blockly.BlockSvg[] {
+function makeModelBlock(workspace: Blockly.Workspace, type: string): Blockly.Block {
+  return workspace.newBlock(type);
+}
+
+function blocksFromStatements(workspace: Blockly.Workspace, statements: ArduinoStatement[]): Blockly.Block[] {
   return statements.map((statement) => {
-    let block: Blockly.BlockSvg;
+    let block: Blockly.Block;
     switch (statement.kind) {
       case "include":
-        block = makeBlock(workspace, "trace_include");
+        block = makeModelBlock(workspace, "trace_include");
         block.setFieldValue(statement.quoted ? "QUOTE" : "ANGLE", "STYLE");
         block.setFieldValue(statement.header, "HEADER");
         return block;
       case "directive":
-        block = makeBlock(workspace, "trace_directive");
+        block = makeModelBlock(workspace, "trace_directive");
         block.setFieldValue(statement.directive, "DIRECTIVE");
         return block;
       case "comment":
-        block = makeBlock(workspace, "trace_comment");
+        block = makeModelBlock(workspace, "trace_comment");
         block.setFieldValue(statement.block ? "BLOCK" : "LINE", "STYLE");
         block.setFieldValue(statement.text, "TEXT");
         return block;
       case "declaration":
-        block = makeBlock(workspace, "trace_declaration");
+        block = makeModelBlock(workspace, "trace_declaration");
         block.setFieldValue(statement.typeName, "TYPE");
         block.setFieldValue(statement.name, "NAME");
         block.setFieldValue(statement.initializer, "VALUE");
         return block;
       case "assignment":
-        block = makeBlock(workspace, "trace_assignment");
+        block = makeModelBlock(workspace, "trace_assignment");
         block.setFieldValue(statement.target, "TARGET");
         block.setFieldValue(statement.operator, "OPERATOR");
         block.setFieldValue(statement.value, "VALUE");
         return block;
       case "update":
-        block = makeBlock(workspace, "trace_update");
+        block = makeModelBlock(workspace, "trace_update");
         block.setFieldValue(statement.prefix ? "PREFIX" : "POSTFIX", "POSITION");
         block.setFieldValue(statement.target, "TARGET");
         block.setFieldValue(statement.operator, "OPERATOR");
         return block;
       case "call":
-        block = makeBlock(workspace, "trace_call");
+        block = makeModelBlock(workspace, "trace_call");
         block.setFieldValue(statement.callee, "CALLEE");
         block.setFieldValue(statement.arguments, "ARGUMENTS");
         return block;
       case "return":
-        block = makeBlock(workspace, "trace_return");
+        block = makeModelBlock(workspace, "trace_return");
         block.setFieldValue(statement.value, "VALUE");
         return block;
       case "flow":
-        block = makeBlock(workspace, "trace_flow");
+        block = makeModelBlock(workspace, "trace_flow");
         block.setFieldValue(statement.action, "ACTION");
         return block;
       case "pinMode":
-        block = makeBlock(workspace, "trace_pin_mode");
+        block = makeModelBlock(workspace, "trace_pin_mode");
         block.setFieldValue(statement.pin, "PIN");
         block.setFieldValue(statement.mode, "MODE");
         return block;
       case "digitalWrite":
-        block = makeBlock(workspace, "trace_digital_write");
+        block = makeModelBlock(workspace, "trace_digital_write");
         block.setFieldValue(statement.pin, "PIN");
         block.setFieldValue(statement.state, "STATE");
         return block;
       case "analogWrite":
-        block = makeBlock(workspace, "trace_analog_write");
+        block = makeModelBlock(workspace, "trace_analog_write");
         block.setFieldValue(statement.pin, "PIN");
         block.setFieldValue(statement.value, "VALUE");
         return block;
       case "delay":
-        block = makeBlock(workspace, "trace_delay");
+        block = makeModelBlock(workspace, "trace_delay");
         block.setFieldValue(statement.milliseconds, "MILLISECONDS");
         return block;
       case "serialBegin":
-        block = makeBlock(workspace, "trace_serial_begin");
+        block = makeModelBlock(workspace, "trace_serial_begin");
         block.setFieldValue(String(statement.baud), "BAUD");
         return block;
       case "serialPrintln":
-        block = makeBlock(workspace, "trace_serial_print");
+        block = makeModelBlock(workspace, "trace_serial_print");
         block.setFieldValue(statement.text, "TEXT");
         return block;
       case "repeat":
-        block = makeBlock(workspace, "trace_repeat");
+        block = makeModelBlock(workspace, "trace_repeat");
         block.setFieldValue(statement.times, "TIMES");
         connectStack(block.getInput("DO")?.connection ?? null, blocksFromStatements(workspace, statement.statements));
         return block;
       case "ifDigital":
-        block = makeBlock(workspace, "trace_if_digital");
+        block = makeModelBlock(workspace, "trace_if_digital");
         block.setFieldValue(statement.pin, "PIN");
         block.setFieldValue(statement.state, "STATE");
         connectStack(block.getInput("DO")?.connection ?? null, blocksFromStatements(workspace, statement.statements));
         return block;
       case "if":
-        block = makeBlock(workspace, "trace_if");
+        block = makeModelBlock(workspace, "trace_if");
         block.setFieldValue(statement.condition, "CONDITION");
         connectStack(block.getInput("DO")?.connection ?? null, blocksFromStatements(workspace, statement.statements));
         connectStack(block.getInput("ELSE")?.connection ?? null, blocksFromStatements(workspace, statement.elseStatements));
         return block;
       case "while":
-        block = makeBlock(workspace, "trace_while");
+        block = makeModelBlock(workspace, "trace_while");
         block.setFieldValue(statement.condition, "CONDITION");
         connectStack(block.getInput("DO")?.connection ?? null, blocksFromStatements(workspace, statement.statements));
         return block;
       case "for":
-        block = makeBlock(workspace, "trace_for");
+        block = makeModelBlock(workspace, "trace_for");
         block.setFieldValue(statement.initializer, "INITIALIZER");
         block.setFieldValue(statement.condition, "CONDITION");
         block.setFieldValue(statement.update, "UPDATE");
         connectStack(block.getInput("DO")?.connection ?? null, blocksFromStatements(workspace, statement.statements));
         return block;
       case "function":
-        block = makeBlock(workspace, "trace_function");
+        block = makeModelBlock(workspace, "trace_function");
         block.setFieldValue(statement.returnType, "RETURN_TYPE");
         block.setFieldValue(statement.name, "NAME");
         block.setFieldValue(statement.parameters, "PARAMETERS");
         connectStack(block.getInput("DO")?.connection ?? null, blocksFromStatements(workspace, statement.statements));
         return block;
       case "raw":
-        block = makeBlock(workspace, "trace_raw_code");
+        block = makeModelBlock(workspace, "trace_raw_code");
         block.setFieldValue(statement.code, "CODE");
         return block;
     }
   });
 }
 
-function lockRoot(block: Blockly.BlockSvg) {
+function lockRoot(block: Blockly.Block) {
   block.setDeletable(false);
   block.setMovable(false);
 }
 
-export function loadArduinoCode(workspace: Blockly.WorkspaceSvg, source: string) {
+export function createArduinoBlockState(source: string): Blockly.serialization.blocks.State {
+  registerArduinoBlocks();
   const program = parseArduinoCode(source);
+  const staging = new Blockly.Workspace();
+  try {
+    let root: Blockly.Block;
+    if (program.kind === "rawProgram") {
+      root = makeModelBlock(staging, "trace_raw_program");
+      root.setFieldValue(program.code, "CODE");
+    } else {
+      root = makeModelBlock(staging, "trace_program");
+      connectStack(root.getInput("BEFORE_SETUP")?.connection ?? null, blocksFromStatements(staging, program.beforeSetup));
+      connectStack(root.getInput("SETUP")?.connection ?? null, blocksFromStatements(staging, program.setup));
+      connectStack(root.getInput("BETWEEN_FUNCTIONS")?.connection ?? null, blocksFromStatements(staging, program.betweenFunctions));
+      connectStack(root.getInput("LOOP")?.connection ?? null, blocksFromStatements(staging, program.loop));
+      connectStack(root.getInput("AFTER_LOOP")?.connection ?? null, blocksFromStatements(staging, program.afterLoop));
+    }
+    lockRoot(root);
+
+    const topBlocks = staging.getTopBlocks(false);
+    if (topBlocks.length !== 1 || topBlocks[0] !== root) {
+      throw new Error(`Generated Arduino block tree has ${topBlocks.length} disconnected roots.`);
+    }
+    const state = Blockly.serialization.blocks.save(root, { saveIds: false });
+    if (!state) throw new Error("Could not serialize the generated Arduino block tree.");
+    return state;
+  } finally {
+    staging.dispose();
+  }
+}
+
+export function loadArduinoCode(workspace: Blockly.WorkspaceSvg, source: string) {
+  const state = createArduinoBlockState(source);
   Blockly.Events.disable();
   try {
     workspace.clear();
-    if (program.kind === "rawProgram") {
-      const raw = makeBlock(workspace, "trace_raw_program");
-      raw.setFieldValue(program.code, "CODE");
-      raw.moveBy(40, 36);
-      lockRoot(raw);
-      return;
-    }
-
-    const root = makeBlock(workspace, "trace_program");
-    connectStack(root.getInput("BEFORE_SETUP")?.connection ?? null, blocksFromStatements(workspace, program.beforeSetup));
-    connectStack(root.getInput("SETUP")?.connection ?? null, blocksFromStatements(workspace, program.setup));
-    connectStack(root.getInput("BETWEEN_FUNCTIONS")?.connection ?? null, blocksFromStatements(workspace, program.betweenFunctions));
-    connectStack(root.getInput("LOOP")?.connection ?? null, blocksFromStatements(workspace, program.loop));
-    connectStack(root.getInput("AFTER_LOOP")?.connection ?? null, blocksFromStatements(workspace, program.afterLoop));
+    const root = Blockly.serialization.blocks.append(state, workspace) as Blockly.BlockSvg;
     root.moveBy(40, 36);
-    lockRoot(root);
   } finally {
     Blockly.Events.enable();
   }
