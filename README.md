@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Windows & macOS Users:** The current release opens unexpected terminal windows and may not function correctly. A fix is actively being worked on! If you need a stable experience, we recommend waiting for the upcoming patch.
+
 # Trace
 
 Trace is a focused desktop IDE for ESP32 and Arduino development. It provides a modern code editor, a beginner-friendly visual block editor, live build output, automatic library installation, upload controls, and a serial console while leaving the actual toolchain work to `arduino-cli`.
