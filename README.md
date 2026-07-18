@@ -2,6 +2,8 @@
 
 Trace is a focused desktop IDE for ESP32 and Arduino development. It provides a modern code editor, a beginner-friendly visual block editor, live build output, automatic library installation, upload controls, and a serial console while leaving the actual toolchain work to `arduino-cli`.
 
+Trace does not remote-control the Arduino IDE. It uses the same Arduino CLI backend and normal Arduino data directories directly, so installed cores and libraries remain compatible. On Windows, Trace can use its managed CLI or discover the CLI bundled with Arduino IDE 2 without opening console windows for background commands.
+
 Trace deliberately keeps the workflow small: open or write one `.ino` sketch, choose a connected Arduino-compatible board, compile, upload, and inspect serial data. ESP32 is configured by the installer; other installed Arduino cores use the same workflow. There is no project tree or board-package manager to get between you and the board.
 
 ## Install Trace
@@ -103,6 +105,8 @@ GitHub Actions creates the release and uploads all platform installers. Once tha
 4. Select **Compile**. Trace validates expanded build recipes and partition files before starting, then streams `arduino-cli` output into the build panel.
 5. After a successful compile, select **Upload**. Upload remains disabled until that session has a successful, current compile.
 6. Connect the serial console, select a baud rate (115200 by default), and send or receive newline-delimited data.
+
+On Windows, if the board still does not appear, close Arduino IDE's Serial Monitor and any other program using the COM port, reconnect the board, and confirm it appears in Device Manager. Boards using CP210x or CH34x USB bridges may require the matching manufacturer driver before Windows exposes a COM port.
 
 Arduino sketches conventionally live in a directory with the same name as the primary `.ino` file (for example, `Blink/Blink.ino`). Following that convention provides the best compatibility with Arduino CLI.
 

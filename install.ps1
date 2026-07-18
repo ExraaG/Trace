@@ -15,6 +15,17 @@ function Write-Step([string]$Message) {
 function Fail([string]$Message) {
     throw "Trace installer error: $Message"
 }
+function Add-ToUserPath([string]$Directory) {
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $Entries = @($UserPath -split ";" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($Entries -notcontains $Directory) {
+        $UpdatedPath = (@($Directory) + $Entries) -join ";"
+        [Environment]::SetEnvironmentVariable("Path", $UpdatedPath, "User")
+    }
+    if (($env:Path -split ";") -notcontains $Directory) {
+        $env:Path = "$Directory;$env:Path"
+    }
+}
 
 try {
     if ($env:PROCESSOR_ARCHITECTURE -notin @("AMD64", "x86_64")) {
@@ -78,6 +89,14 @@ try {
     }
 
     [Environment]::SetEnvironmentVariable("TRACE_ARDUINO_CLI", $ArduinoCli, "User")
+    $env:TRACE_ARDUINO_CLI = $ArduinoCli
+    Add-ToUserPath $CliDirectory
+
+    $CliVersion = (& $ArduinoCli version 2>&1) -join "`n"
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Arduino CLI was installed but could not start: $CliVersion"
+    }
+
     & $ArduinoCli config init 2>$null | Out-Null
     $Config = (& $ArduinoCli config dump 2>$null) -join "`n"
     if ($Config -notmatch [regex]::Escape($Esp32Index)) {
@@ -97,7 +116,8 @@ try {
     }
 
     Write-Step "Installation complete"
-    Write-Host "Launch Trace from the Start menu."
+    Write-Host "Arduino CLI: $CliVersion"
+    Write-Host "Launch Trace from the Start menu. Trace uses Arduino CLI directly and shares Arduino IDE's normal board/core data."
 } finally {
     if (Test-Path $TempDirectory) {
         Remove-Item -Path $TempDirectory -Recurse -Force -ErrorAction SilentlyContinue

@@ -55,6 +55,7 @@ jobs:
         run: |
           sh -n install.sh
           npm audit --audit-level=high
+          npm test
           npm run build
           cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
           cargo test --manifest-path src-tauri/Cargo.toml --locked
@@ -115,6 +116,12 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Validate Windows installer script
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          [scriptblock]::Create((Get-Content -Raw install.ps1)) | Out-Null
 
       - name: Build and upload release bundles
         uses: tauri-apps/tauri-action@v1

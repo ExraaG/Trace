@@ -22,6 +22,9 @@ use tokio::{io::AsyncBufReadExt, process::Command, sync::Mutex as AsyncMutex};
 const STAGED_SKETCH_NAME: &str = "TraceSketch";
 const AI_SYSTEM_PROMPT: &str = "You are the optional Trace IDE assistant. Help with ESP32, Arduino, C++, build errors, uploads, and embedded debugging. Be concise, practical, and explicit when uncertain. Prefer the smallest safe fix. You only know code or logs the user deliberately includes in chat. When a request includes <trace-current-code> and asks you to write or change the open sketch, return the complete replacement sketch inside exactly one <trace-code>...</trace-code> block. Never put partial code in that block.";
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 fn arduino_cli_binary_name() -> &'static str {
     if cfg!(windows) {
         "arduino-cli.exe"
@@ -32,7 +35,10 @@ fn arduino_cli_binary_name() -> &'static str {
 
 fn arduino_cli_path() -> PathBuf {
     if let Some(path) = env::var_os("TRACE_ARDUINO_CLI").filter(|value| !value.is_empty()) {
-        return PathBuf::from(path);
+        let path = PathBuf::from(path);
+        if path.is_file() || path.components().count() == 1 {
+            return path;
+        }
     }
 
     let home = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"));
@@ -43,6 +49,35 @@ fn arduino_cli_path() -> PathBuf {
             .join(arduino_cli_binary_name());
         if managed.is_file() {
             return managed;
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let mut ide_roots = Vec::new();
+        if let Some(local) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            ide_roots.push(local.join("Programs").join("Arduino IDE"));
+            ide_roots.push(local.join("Arduino IDE"));
+        }
+        for root in [
+            env::var_os("ProgramFiles"),
+            env::var_os("ProgramFiles(x86)"),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            ide_roots.push(PathBuf::from(root).join("Arduino IDE"));
+        }
+        for root in ide_roots {
+            for relative in [
+                "resources/app/lib/backend/resources/arduino-cli.exe",
+                "resources/app/node_modules/arduino-ide-extension/build/arduino-cli.exe",
+            ] {
+                let bundled = root.join(relative);
+                if bundled.is_file() {
+                    return bundled;
+                }
+            }
         }
     }
 
@@ -69,6 +104,11 @@ fn path_without_app_dir(value: &OsStr, app_dir: &Path) -> Option<OsString> {
 
 fn arduino_cli_command(path: &Path) -> Command {
     let mut command = Command::new(path);
+
+    // Trace is a GUI application. Without this flag Windows creates a visible
+    // console window for every board scan, library query, compile, and upload.
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
 
     // AppImage launchers may provide a bundled Python environment for their own
     // runtime. ESP32 tools also use Python and must never inherit that runtime.
